@@ -23,6 +23,7 @@ type Engine struct {
 	integrity *IntegrityCheck
 	log       io.Writer
 	wg        sync.WaitGroup
+	watcher   *Watcher
 	cancelled chan struct{}
 	closeOnce sync.Once
 }
@@ -263,6 +264,43 @@ func (e *Engine) fail(job *Job, msg string) {
 // CloseCancellation sinaliza os workers para abortar o job em andamento.
 func (e *Engine) CloseCancellation() {
 	e.closeOnce.Do(func() { close(e.cancelled) })
+}
+
+// StartWatcher inicializa o watcher com debounce e o liga ao engine (RF01).
+func (e *Engine) StartWatcher(stableFor time.Duration) error {
+	w, err := NewWatcher(stableFor, e.HandleDiscovered)
+	if err != nil {
+		return err
+	}
+	e.watcher = w
+	return nil
+}
+
+// WatchDir passa a monitorar um diretório (recursivo).
+func (e *Engine) WatchDir(dir string) error {
+	if e.watcher == nil {
+		if err := e.StartWatcher(5e9); err != nil {
+			return err
+		}
+	}
+	return e.watcher.AddDir(dir)
+}
+
+// StartWatch inicia o loop do watcher em background.
+func (e *Engine) StartWatch() {
+	if e.watcher != nil {
+		e.watcher.Start()
+	}
+}
+
+// Shutdown encerra o watcher e o store.
+func (e *Engine) Shutdown() {
+	if e.watcher != nil {
+		e.watcher.Close()
+	}
+	if e.store != nil {
+		e.store.Close()
+	}
 }
 
 // Graceful encerra os workers aguardando conclusão da fila.
