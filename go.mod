@@ -2,7 +2,10 @@ module github.com/FM0Ura/codecany
 
 go 1.26.5
 
-require modernc.org/sqlite v1.56.0
+require (
+	gopkg.in/yaml.v3 v3.0.1
+	modernc.org/sqlite v1.56.0
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
