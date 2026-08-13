@@ -1,0 +1,75 @@
+# CodecAny Rules — exemplo de configuração
+# A primeira regra que casar vence (first-match wins).
+# Regras mais específicas devem vir antes das genéricas.
+
+version: 1
+
+# ----------------------------------------------------------
+# Configuração global
+# ----------------------------------------------------------
+global:
+  default_driver: ffmpeg
+  staging_dir: .codecany_tmp/        # pasta de trabalho interna (zero-residue)
+
+  # Política de eficiência de espaço (RF05): aplica rollback se o convertido
+  # economizar MENOS que o limite abaixo.
+  space_saving:
+    min_saving_pct: 15
+    fallback_action: rollback
+
+  # Defaults aplicados quando a regra não os especificar.
+  defaults:
+    video:
+      codec: hevc
+      crf: 24
+      preset: slow
+    audio:
+      codec: copy
+    container: auto
+
+# ----------------------------------------------------------
+# Regras (ordem importa: específica primeiro)
+# ----------------------------------------------------------
+rules:
+  # 1) H.264 em MKV → HEVC
+  - name: "MKV H264 para HEVC"
+    match:
+      container: mkv
+      video:
+        codec: h264          # aceita: h264
+      audio:
+        codec: [aac, ac3]    # lista = casa qualquer um
+    convert:
+      video:
+        codec: hevc
+        preset: medium
+      audio:
+        codec: copy
+      container: mkv
+
+  # 2) Vídeo AV1 → nunca converter
+  - name: "Não mexer em AV1"
+    match:
+      video:
+        codec: av1
+    action: skip
+
+  # 3) Fallback genérico: qualquer MP4 H.264 → HEVC/MP4
+  - name: "MP4 H264 para HEVC"
+    match:
+      container: mp4
+      video:
+        codec: h264
+    convert:
+      video:
+        codec: hevc
+        preset: slow
+      container: mp4
+
+# ----------------------------------------------------------
+# Ignora (nunca processa, mesmo que uma regra case)
+# ----------------------------------------------------------
+ignore:
+  dir_contains: ["backup", "downloads_incomplete"]
+  file_suffix: [".part", ".download", ".crdownload"]
+  min_size_bytes: 1048576    # ignora arquivos < 1MB
