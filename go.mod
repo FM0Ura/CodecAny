@@ -3,6 +3,7 @@ module github.com/FM0Ura/codecany
 go 1.26.5
 
 require (
+	github.com/fsnotify/fsnotify v1.10.1
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.56.0
 )
