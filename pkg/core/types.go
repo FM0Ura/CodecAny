@@ -28,6 +28,7 @@ type MediaInfo struct {
 	SubtitleDirs []string `json:"subtitle_dirs"`
 	HasVideo     bool     `json:"has_video"`
 	HasAudio     bool     `json:"has_audio"`
+	DurationSec  float64  `json:"duration_sec"`
 }
 
 // TargetSpec descreve o alvo de conversão extraído das regras (RF03).
