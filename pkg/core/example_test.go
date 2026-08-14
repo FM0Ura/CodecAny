@@ -6,7 +6,7 @@ import (
 )
 
 func TestExampleRulesParse(t *testing.T) {
-	path := filepath.Join("..", "..", "examples", "rules.yaml")
+	path := filepath.Join("..", "..", "rules.example.yaml")
 	r, err := NewRulesEngine(path)
 	if err != nil {
 		t.Fatalf("rules de exemplo não deve falhar ao carregar: %v", err)

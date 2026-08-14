@@ -16,13 +16,15 @@ import (
 
 func main() {
 	var dirs multiFlag
+	var files multiFlag
 	store := flag.String("db", "codecany.db", "arquivo SQLite (.db)")
 	rules := flag.String("rules", "rules.yaml", "arquivo de regras YAML/JSON")
 	workers := flag.Int("workers", 1, "número de workers")
 	jsonLog := flag.Bool("json", false, "log estruturado em JSON")
 	flag.Var(&dirs, "dir", "diretório a monitorar (repita para vários)")
+	flag.Var(&files, "file", "arquivo específico a processar uma vez (repita para vários)")
 	flag.Parse()
-	if len(dirs) == 0 {
+	if len(dirs) == 0 && len(files) == 0 {
 		flag.Usage()
 		os.Exit(2)
 	}
@@ -34,6 +36,16 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+
+	if len(files) > 0 {
+		if err := eng.RunOnce(context.Background(), files); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			eng.Shutdown()
+			os.Exit(1)
+		}
+		eng.Shutdown()
+		return
 	}
 
 	for _, d := range dirs {

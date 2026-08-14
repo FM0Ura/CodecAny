@@ -77,34 +77,34 @@ func (e *Engine) emit(ev JobEvent) {
 }
 
 // HandleDiscovered processa um arquivo detectado pelo Watcher (RF01→RF03).
-func (e *Engine) HandleDiscovered(path string) {
+// Retorna true se um job foi criado (enfileirado).
+func (e *Engine) HandleDiscovered(path string) bool {
 	if e.rules.ShouldIgnore(path, 0) {
-		return
+		return false
 	}
 	mi, err := e.prober.Probe(path)
 	if err != nil {
 		e.logf("probe falhou %s: %v", path, err)
-		return
+		return false
 	}
 	outcome, target, err := e.rules.Evaluate(mi)
 	if err != nil {
 		e.logf("avaliar regras %s: %v", path, err)
-		return
+		return false
 	}
 	if outcome != OutcomeConvert {
 		e.logf("skip %s", path)
-		return
+		return false
 	}
 	driver := e.rules.Global().DefaultDriver
 	if _, ok := e.engines[driver]; !ok {
 		e.logf("driver não registrado: %s", driver)
-		return
+		return false
 	}
-	if _, err := e.store.FindByPath(path); err == nil {
+	if existing, err := e.store.FindByPath(path); err == nil && existing != nil {
 		// já existe job para este caminho
-		existing, _ := e.store.FindByPath(path)
-		if existing != nil && existing.Status != StatusFailed && existing.Status != StatusRolledBack {
-			return
+		if existing.Status != StatusFailed && existing.Status != StatusRolledBack {
+			return false
 		}
 	}
 	job := &Job{
@@ -118,14 +118,14 @@ func (e *Engine) HandleDiscovered(path string) {
 	}
 	if err := e.store.CreateJob(job); err != nil {
 		e.logf("criar job %s: %v", path, err)
-		return
+		return false
 	}
 	e.logf("job enfileirado %s (%s)", path, job.ID[:8])
+	return true
 }
 
-// OpenWorkers inicia o pool de workers consumindo a fila.
-// Bloqueia até o contexto ser cancelado ou o canal de jobs ser fechado.
-func (e *Engine) OpenWorkers(ctx context.Context) {
+// startWorkers dispara o pool de workers e recupera jobs de run anterior.
+func (e *Engine) startWorkers(ctx context.Context) {
 	for i := 0; i < e.workers; i++ {
 		e.wg.Add(1)
 		go e.workerLoop(ctx)
@@ -133,6 +133,12 @@ func (e *Engine) OpenWorkers(ctx context.Context) {
 	if err := e.bootRecover(); err != nil {
 		e.logf("recuperação de boot: %v", err)
 	}
+}
+
+// OpenWorkers inicia o pool de workers consumindo a fila.
+// Bloqueia até o contexto ser cancelado ou o canal de jobs ser fechado.
+func (e *Engine) OpenWorkers(ctx context.Context) {
+	e.startWorkers(ctx)
 	e.wg.Wait()
 }
 
@@ -145,6 +151,57 @@ func (e *Engine) bootRecover() error {
 	return nil
 }
 
+// RunOnce processa um conjunto específico de arquivos (modo one-shot) e retorna
+// quando a fila esvaziar, em vez de monitorar diretórios indefinidamente.
+// Retorna erro se algum arquivo informado não pôde ser processado.
+func (e *Engine) RunOnce(ctx context.Context, files []string) error {
+	var skipped int
+	for _, f := range files {
+		fi, err := os.Stat(f)
+		if err != nil {
+			e.logf("arquivo inacessível em -file: %s (%v)", f, err)
+			skipped++
+			continue
+		}
+		if fi.IsDir() {
+			e.logf("skip diretório em -file: %s", f)
+			skipped++
+			continue
+		}
+		if !e.HandleDiscovered(f) {
+			skipped++
+		}
+	}
+	e.startWorkers(ctx)
+	tick := time.NewTicker(500 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		n, err := e.store.PendingJobCount()
+		if err != nil {
+			e.CloseCancellation()
+			e.wg.Wait()
+			return err
+		}
+		if n == 0 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			e.CloseCancellation()
+			e.wg.Wait()
+			return ctx.Err()
+		case <-tick.C:
+		}
+	}
+	e.CloseCancellation()
+	e.wg.Wait()
+	if skipped > 0 {
+		return fmt.Errorf("%d arquivo(s) não puderam ser processados", skipped)
+	}
+	return nil
+}
+
+// workerLoop consome a fila de jobs até o contexto ser cancelado ou abortado.
 func (e *Engine) workerLoop(ctx context.Context) {
 	defer e.wg.Done()
 	for {
@@ -268,7 +325,7 @@ func (e *Engine) CloseCancellation() {
 
 // StartWatcher inicializa o watcher com debounce e o liga ao engine (RF01).
 func (e *Engine) StartWatcher(stableFor time.Duration) error {
-	w, err := NewWatcher(stableFor, e.HandleDiscovered)
+	w, err := NewWatcher(stableFor, func(path string) { e.HandleDiscovered(path) })
 	if err != nil {
 		return err
 	}

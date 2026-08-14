@@ -1,0 +1,18 @@
+# Local Files
+*.mkv
+.directory
+rules.yaml
+
+# Secrets
+.env
+*.db
+*.db-shm
+*.db-wal
+
+# IA Agents
+.serena
+.opencode
+graphify-out
+
+# Build
+codecany

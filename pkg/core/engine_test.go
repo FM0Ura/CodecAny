@@ -127,3 +127,63 @@ func TestEngineRollsBackInsufficientGain(t *testing.T) {
 		t.Errorf("staging do job deveria ser purgada após rollback")
 	}
 }
+
+func TestEngineRunOnceDrainsQueue(t *testing.T) {
+	eng, events, mediaPath, _ := setupEngine(t, 1000, 500)
+
+	done := make(chan error, 1)
+	go func() { done <- eng.RunOnce(context.Background(), []string{mediaPath}) }()
+
+	evs := drainEvents(events, 3*time.Second)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunOnce: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("RunOnce não retornou dentro do tempo limite")
+	}
+
+	var okComplete bool
+	for _, ev := range evs {
+		if ev.Kind == EventJobComplete && ev.Success {
+			okComplete = true
+		}
+	}
+	if !okComplete {
+		t.Fatalf("esperava OnJobComplete success; recebidos: %+v", evs)
+	}
+	if n, err := eng.store.PendingJobCount(); err != nil || n != 0 {
+		t.Errorf("fila deveria estar vazia após RunOnce, pendentes=%d err=%v", n, err)
+	}
+}
+
+func TestEngineRunOnceReportsSkippedFiles(t *testing.T) {
+	eng, events, mediaPath, _ := setupEngine(t, 1000, 500)
+
+	missing := filepath.Join(t.TempDir(), "missing.mkv")
+	done := make(chan error, 1)
+	go func() {
+		done <- eng.RunOnce(context.Background(), []string{missing, mediaPath})
+	}()
+
+	evs := drainEvents(events, 3*time.Second)
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("RunOnce deveria reportar arquivo não processado")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("RunOnce não retornou dentro do tempo limite")
+	}
+
+	var okComplete bool
+	for _, ev := range evs {
+		if ev.Kind == EventJobComplete && ev.Success {
+			okComplete = true
+		}
+	}
+	if !okComplete {
+		t.Fatalf("arquivo válido ainda deveria ser processado; recebidos: %+v", evs)
+	}
+}

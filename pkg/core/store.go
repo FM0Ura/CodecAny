@@ -159,6 +159,21 @@ func (s *Store) ClaimPendingMarks() ([]*Job, error) {
 	return jobs, rows.Err()
 }
 
+// PendingJobCount retorna quantos jobs ainda aguardando processamento (QUEUED)
+// ou em andamento (IN_PROGRESS). Usado pelo modo one-shot para aguardar a fila
+// esvaziar antes de encerrar.
+func (s *Store) PendingJobCount() (int, error) {
+	var n int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM jobs WHERE status = ? OR status = ?`,
+		StatusQueued, StatusInProgress,
+	).Scan(&n)
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
 // RecoverInterrupted devolve jobs pendentes de run anteriores (boot orphan recovery,
 // seção 5.3) marcando-os como QUEUED para re-enfileiramento.
 func (s *Store) RecoverInterrupted() ([]*Job, error) {
