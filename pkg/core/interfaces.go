@@ -7,6 +7,15 @@ type MediaProber interface {
 	Probe(path string) (MediaInfo, error)
 }
 
+// MediaVerifier é a interface de verificação de integridade de mídia (segurança).
+// Implementações: pkg/adapters/ffmpeg (via decode test do ffmpeg).
+type MediaVerifier interface {
+	// Verify decodifica o arquivo de ponta a ponta e retorna erro se houver
+	// qualquer falha de decodificação, garantindo que o arquivo é íntegro e
+	// reproduzível antes de uma troca.
+	Verify(path string) error
+}
+
 // TranscoderEngine é a interface de conversão (RF04, RI03).
 // Implementações: pkg/adapters/ffmpeg (via ffmpeg).
 type TranscoderEngine interface {

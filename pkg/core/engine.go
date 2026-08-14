@@ -16,6 +16,7 @@ type Engine struct {
 	store     *Store
 	rules     *RulesEngine
 	prober    MediaProber
+	verifier  MediaVerifier
 	engines   map[string]TranscoderEngine
 	workers   int
 	events    chan JobEvent
@@ -31,13 +32,14 @@ type Engine struct {
 
 // EngineDeps agrupa as dependências para criar um Engine.
 type EngineDeps struct {
-	Store   *Store
-	Rules   *RulesEngine
-	Prober  MediaProber
-	Engines []TranscoderEngine
-	Workers int
-	Events  chan JobEvent
-	Logger  *slog.Logger
+	Store    *Store
+	Rules    *RulesEngine
+	Prober   MediaProber
+	Verifier MediaVerifier
+	Engines  []TranscoderEngine
+	Workers  int
+	Events   chan JobEvent
+	Logger   *slog.Logger
 }
 
 // NewEngine constrói o orquestrador a partir das dependências.
@@ -56,6 +58,7 @@ func NewEngine(d EngineDeps) (*Engine, error) {
 		store:     d.Store,
 		rules:     d.Rules,
 		prober:    d.Prober,
+		verifier:  d.Verifier,
 		engines:   em,
 		workers:   d.Workers,
 		events:    d.Events,
@@ -293,6 +296,18 @@ loop:
 	// TESTING
 	nowT := time.Now()
 	e.store.UpdateStatus(job.ID, StatusTesting, nil, &nowT, "")
+
+	// Verificação de integridade/segurança: o output convertido é decodificado
+	// de ponta a ponta antes de qualquer troca. Se falhar, o original é
+	// preservado (não substituímos um MKV bom por uma conversão quebrada).
+	if e.verifier != nil {
+		if err := e.verifier.Verify(cl.Output()); err != nil {
+			cl.Abort()
+			e.fail(job, fmt.Sprintf("verificação de decodificação: %v", err))
+			return
+		}
+	}
+
 	keep, m, err := e.integrity.Check(job.Path, cl.Output())
 	if err != nil {
 		cl.Abort()

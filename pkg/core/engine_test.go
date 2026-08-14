@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -11,6 +12,10 @@ import (
 
 // setupEngine monta um engine end-to-end com mocks e um único job na fila.
 func setupEngine(t *testing.T, origSize, outSize int64) (*Engine, chan JobEvent, string, string) {
+	return setupEngineWithVerifier(t, origSize, outSize, nil)
+}
+
+func setupEngineWithVerifier(t *testing.T, origSize, outSize int64, verifier MediaVerifier) (*Engine, chan JobEvent, string, string) {
 	t.Helper()
 	base := t.TempDir()
 	stage := filepath.Join(base, "staging")
@@ -32,13 +37,14 @@ func setupEngine(t *testing.T, origSize, outSize int64) (*Engine, chan JobEvent,
 	}
 	events := make(chan JobEvent, 64)
 	eng, err := NewEngine(EngineDeps{
-		Store:   store,
-		Rules:   re,
-		Prober:  mockProber{info: MediaInfo{Container: "mkv", VideoCodec: "h264"}},
-		Engines: []TranscoderEngine{&mockTranscoder{outputSize: outSize}},
-		Workers: 1,
-		Events:  events,
-		Logger:  slog.New(slog.NewTextHandler(os.Stderr, nil)),
+		Store:    store,
+		Rules:    re,
+		Prober:   mockProber{info: MediaInfo{Container: "mkv", VideoCodec: "h264"}},
+		Verifier: verifier,
+		Engines:  []TranscoderEngine{&mockTranscoder{outputSize: outSize}},
+		Workers:  1,
+		Events:   events,
+		Logger:   slog.New(slog.NewTextHandler(os.Stderr, nil)),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -186,5 +192,76 @@ func TestEngineRunOnceReportsSkippedFiles(t *testing.T) {
 	}
 	if !okComplete {
 		t.Fatalf("arquivo válido ainda deveria ser processado; recebidos: %+v", evs)
+	}
+}
+
+func TestEngineFailsWhenVerificationRejectsOutput(t *testing.T) {
+	eng, events, mediaPath, stage := setupEngineWithVerifier(t, 1000, 500, mockVerifier{
+		err: errors.New("decode: broken file"),
+	})
+	eng.HandleDiscovered(mediaPath)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() {
+			time.Sleep(2 * time.Second)
+			cancel()
+		}()
+		eng.OpenWorkers(ctx)
+	}()
+	evs := drainEvents(events, 3*time.Second)
+	<-done
+
+	var errored bool
+	for _, ev := range evs {
+		if ev.Kind == EventJobError {
+			errored = true
+		}
+	}
+	if !errored {
+		t.Fatalf("esperava EventJobError; recebidos: %+v", evs)
+	}
+	// original preservado: verificação falhou ⇒ nenhuma troca
+	fi, err := os.Stat(mediaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Size() != 1000 {
+		t.Errorf("original deveria permanecer 1000, obteve %d", fi.Size())
+	}
+	if _, err := os.Stat(filepath.Join(stage, "movie")); err == nil {
+		t.Errorf("staging do job deveria ser purgada após falha de verificação")
+	}
+}
+
+func TestEngineCompletesWithPassingVerification(t *testing.T) {
+	eng, events, mediaPath, _ := setupEngineWithVerifier(t, 1000, 500, mockVerifier{err: nil})
+	eng.HandleDiscovered(mediaPath)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() {
+			time.Sleep(2 * time.Second)
+			cancel()
+		}()
+		eng.OpenWorkers(ctx)
+	}()
+	evs := drainEvents(events, 3*time.Second)
+	<-done
+
+	var ok bool
+	for _, ev := range evs {
+		if ev.Kind == EventJobComplete && ev.Success {
+			ok = true
+		}
+	}
+	if !ok {
+		t.Fatalf("esperava OnJobComplete success; recebidos: %+v", evs)
 	}
 }

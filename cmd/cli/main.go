@@ -108,13 +108,14 @@ func buildEngine(storePath, rulesPath string, workers int, events chan core.JobE
 		return nil, fmt.Errorf("rules: %w", err)
 	}
 	return core.NewEngine(core.EngineDeps{
-		Store:   s,
-		Rules:   re,
-		Prober:  ffmpeg.NewProber(),
-		Engines: []core.TranscoderEngine{ffmpeg.NewTranscode()},
-		Workers: workers,
-		Events:  events,
-		Logger:  log,
+		Store:    s,
+		Rules:    re,
+		Prober:   ffmpeg.NewProber(),
+		Verifier: ffmpeg.NewVerifier(),
+		Engines:  []core.TranscoderEngine{ffmpeg.NewTranscode()},
+		Workers:  workers,
+		Events:   events,
+		Logger:   log,
 	})
 }
 

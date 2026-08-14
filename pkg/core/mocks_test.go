@@ -38,6 +38,13 @@ func (m *mockTranscoder) Transcode(input, output string, media MediaInfo, target
 	return prog, nil
 }
 
+// mockVerifier implementa MediaVerifier com resposta determinística.
+type mockVerifier struct {
+	err error
+}
+
+func (m mockVerifier) Verify(path string) error { return m.err }
+
 // drainEvents consome o canal de eventos até um limite de tempo.
 func drainEvents(ch chan JobEvent, timeout time.Duration) []JobEvent {
 	var out []JobEvent
