@@ -20,9 +20,10 @@ type SpaceSavingPolicy struct {
 // RuleDefaults são os alvos default aplicados quando a regra não especifica.
 type RuleDefaults struct {
 	Video struct {
-		Codec  string `yaml:"codec" json:"codec"`
-		CRF    int    `yaml:"crf" json:"crf"`
-		Preset string `yaml:"preset" json:"preset"`
+		Codec    string `yaml:"codec" json:"codec"`
+		CRF      int    `yaml:"crf" json:"crf"`
+		Preset   string `yaml:"preset" json:"preset"`
+		Lossless bool   `yaml:"lossless" json:"lossless"`
 	} `yaml:"video" json:"video"`
 	Audio struct {
 		Codec   string `yaml:"codec" json:"codec"`
@@ -70,9 +71,10 @@ type ConvertSpec struct {
 
 // TargetSpecVideo carrega campos de vídeo.
 type TargetSpecVideo struct {
-	Codec  string `yaml:"codec" json:"codec"`
-	CRF    int    `yaml:"crf" json:"crf"`
-	Preset string `yaml:"preset" json:"preset"`
+	Codec    string `yaml:"codec" json:"codec"`
+	CRF      int    `yaml:"crf" json:"crf"`
+	Preset   string `yaml:"preset" json:"preset"`
+	Lossless bool   `yaml:"lossless" json:"lossless"`
 }
 
 // TargetSpecAudio carrega campos de áudio.
@@ -425,11 +427,15 @@ func mergeSpec(c ConvertSpec, def RuleDefaults) TargetSpec {
 		out.VideoCodec = c.Video.Codec
 		out.VideoCRF = c.Video.CRF
 		out.VideoPreset = c.Video.Preset
+		out.VideoLossless = c.Video.Lossless
 	}
 	if out.VideoCodec == "" {
 		out.VideoCodec = def.Video.Codec
 	}
-	if out.VideoCRF == 0 {
+	if !out.VideoLossless {
+		out.VideoLossless = def.Video.Lossless
+	}
+	if out.VideoCRF == 0 && !out.VideoLossless {
 		out.VideoCRF = def.Video.CRF
 	}
 	if out.VideoPreset == "" {

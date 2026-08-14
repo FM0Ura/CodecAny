@@ -34,12 +34,13 @@ type MediaInfo struct {
 // TargetSpec descreve o alvo de conversão extraído das regras (RF03).
 // O driver adapter é responsável por traduzir este spec em flags nativas.
 type TargetSpec struct {
-	VideoCodec   string `json:"video_codec,omitempty" yaml:"codec,omitempty"`
-	VideoCRF     int    `json:"video_crf,omitempty" yaml:"crf,omitempty"`
-	VideoPreset  string `json:"video_preset,omitempty" yaml:"preset,omitempty"`
-	AudioCodec   string `json:"audio_codec,omitempty" yaml:"audio_codec,omitempty"`
-	AudioBitrate string `json:"audio_bitrate,omitempty" yaml:"audio_bitrate,omitempty"`
-	Container    string `json:"container,omitempty" yaml:"container,omitempty"`
+	VideoCodec    string `json:"video_codec,omitempty" yaml:"codec,omitempty"`
+	VideoCRF      int    `json:"video_crf,omitempty" yaml:"crf,omitempty"`
+	VideoPreset   string `json:"video_preset,omitempty" yaml:"preset,omitempty"`
+	VideoLossless bool   `json:"video_lossless,omitempty" yaml:"lossless,omitempty"`
+	AudioCodec    string `json:"audio_codec,omitempty" yaml:"audio_codec,omitempty"`
+	AudioBitrate  string `json:"audio_bitrate,omitempty" yaml:"audio_bitrate,omitempty"`
+	Container     string `json:"container,omitempty" yaml:"container,omitempty"`
 }
 
 // SizeMetrics carrega as métricas de eficiência de espaço (seção 7).
