@@ -3,6 +3,7 @@ package core
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -65,6 +66,59 @@ func TestRulesEvaluateContainerNoMatch(t *testing.T) {
 	}
 	if outcome != OutcomeSkipNoRule {
 		t.Fatalf("esperava SkipNoRule, obteve %v", outcome)
+	}
+}
+
+func TestRulesDescribeMissAllCriteria(t *testing.T) {
+	r := mustEngine(t, baseRules) // regra "h264 -> hevc": container mkv, video h264
+	mi := MediaInfo{Container: "mov", VideoCodec: "hevc", AudioCodecs: []string{"aac"}}
+	got := r.DescribeMiss(mi)
+	for _, want := range []string{"h264 -> hevc:", "container(media=mov, esperado=[mkv])", "video.codec(media=hevc, esperado=[h264])"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("DescribeMiss deveria conter %q; obteve: %s", want, got)
+		}
+	}
+}
+
+func TestRulesDescribeMissRuleMatches(t *testing.T) {
+	r := mustEngine(t, baseRules)
+	mi := MediaInfo{Container: "mkv", VideoCodec: "h264", AudioCodecs: []string{"aac"}}
+	got := r.DescribeMiss(mi)
+	if !strings.Contains(got, "h264 -> hevc: OK") {
+		t.Errorf("DescribeMiss deveria marcar a regra como OK; obteve: %s", got)
+	}
+}
+
+func TestRulesAudioNotBlocking(t *testing.T) {
+	content := `
+version: 1
+global: { staging_dir: /tmp/xs }
+rules:
+  - name: "áudio não casa"
+    match:
+      container: mkv
+      video: { codec: h264 }
+      audio: { codec: [aac, mp3] }
+    convert:
+      video: { codec: hevc }
+`
+	r := mustEngine(t, content)
+	// áudio flac não casa com a regra, mas NÃO deve impedir a conversão
+	mi := MediaInfo{Container: "matroska,webm", VideoCodec: "h264", AudioCodecs: []string{"flac"}}
+	outcome, _, err := r.Evaluate(mi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome != OutcomeConvert {
+		t.Fatalf("áudio divergente não deveria impedir conversão; obteve %v", outcome)
+	}
+	// DescribeMiss não deve apontar áudio como falha bloqueadora
+	got := r.DescribeMiss(mi)
+	if strings.Contains(got, "audio.codec") {
+		t.Fatalf("DescribeMiss não deveria reportar áudio como falha; obteve: %s", got)
+	}
+	if !strings.Contains(got, "OK") {
+		t.Fatalf("regra deveria estar marcada como OK (só áudio divergia); obteve: %s", got)
 	}
 }
 
@@ -137,4 +191,41 @@ func mustEngine(t *testing.T, content string) *RulesEngine {
 		t.Fatal(err)
 	}
 	return r
+}
+
+func TestRulesContainerNormalization(t *testing.T) {
+	// regra "h264 -> hevc" aceita container mkv; mídia real reporta matroska,webm
+	r := mustEngine(t, baseRules)
+	mi := MediaInfo{Container: "matroska,webm", VideoCodec: "h264", AudioCodecs: []string{"aac"}}
+	outcome, _, err := r.Evaluate(mi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome != OutcomeConvert {
+		t.Fatalf("matroska deveria casar container mkv; obteve outcome %v", outcome)
+	}
+}
+
+func TestRulesContainerMp4FormatName(t *testing.T) {
+	content := `
+version: 1
+global: { staging_dir: /tmp/xs, defaults: { video: { codec: hevc, crf: 22, preset: slow }, audio: { codec: copy } } }
+rules:
+  - name: mp4
+    match:
+      container: mp4
+      video: { codec: h264 }
+    convert:
+      video: { codec: hevc }
+`
+	r := mustEngine(t, content)
+	// ffprobe de um MP4 real retorna "mov,mp4,m4a,3gp,3g2,mj2"
+	mi := MediaInfo{Container: "mov,mp4,m4a,3gp,3g2,mj2", VideoCodec: "h264"}
+	outcome, _, err := r.Evaluate(mi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome != OutcomeConvert {
+		t.Fatalf("format_name de mp4 deveria casar container mp4; obteve %v", outcome)
+	}
 }

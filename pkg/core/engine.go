@@ -3,7 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
-	"io"
+	"log/slog"
 	"os"
 	"sync"
 	"time"
@@ -21,7 +21,8 @@ type Engine struct {
 	events    chan JobEvent
 	staging   string
 	integrity *IntegrityCheck
-	log       io.Writer
+	log       *slog.Logger
+	scanEvery time.Duration
 	wg        sync.WaitGroup
 	watcher   *Watcher
 	cancelled chan struct{}
@@ -36,7 +37,7 @@ type EngineDeps struct {
 	Engines []TranscoderEngine
 	Workers int
 	Events  chan JobEvent
-	Log     io.Writer
+	Logger  *slog.Logger
 }
 
 // NewEngine constrói o orquestrador a partir das dependências.
@@ -44,8 +45,8 @@ func NewEngine(d EngineDeps) (*Engine, error) {
 	if d.Workers < 1 {
 		d.Workers = 1
 	}
-	if d.Log == nil {
-		d.Log = os.Stderr
+	if d.Logger == nil {
+		d.Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
 	}
 	em := make(map[string]TranscoderEngine)
 	for _, e := range d.Engines {
@@ -60,16 +61,14 @@ func NewEngine(d EngineDeps) (*Engine, error) {
 		events:    d.Events,
 		staging:   d.Rules.Global().StagingDir,
 		integrity: NewIntegrityCheck(d.Rules.Global().SpaceSaving.MinSavingPct),
-		log:       d.Log,
+		log:       d.Logger,
+		scanEvery: defaultScanInterval,
 		cancelled: make(chan struct{}),
 	}, nil
 }
 
 // Events returns o canal de eventos nativos (RF06, RI02).
 func (e *Engine) Events() <-chan JobEvent { return e.events }
-func (e *Engine) logf(format string, a ...interface{}) {
-	fmt.Fprintf(e.log, "[codecany] "+format+"\n", a...)
-}
 func (e *Engine) emit(ev JobEvent) {
 	if e.events != nil {
 		e.events <- ev
@@ -84,21 +83,31 @@ func (e *Engine) HandleDiscovered(path string) bool {
 	}
 	mi, err := e.prober.Probe(path)
 	if err != nil {
-		e.logf("probe falhou %s: %v", path, err)
+		e.log.Warn("probe falhou", "path", path, "error", err.Error())
 		return false
 	}
 	outcome, target, err := e.rules.Evaluate(mi)
 	if err != nil {
-		e.logf("avaliar regras %s: %v", path, err)
+		e.log.Warn("avaliar regras falhou", "path", path, "error", err.Error())
 		return false
 	}
 	if outcome != OutcomeConvert {
-		e.logf("skip %s", path)
+		if outcome == OutcomeSkip {
+			e.log.Info("regra solicitou skip", "path", path,
+				"container", mi.Container, "video_codec", mi.VideoCodec,
+				"audio_codecs", mi.AudioCodecs,
+				"reason", e.rules.DescribeMiss(mi))
+			return false
+		}
+		e.log.Info("nenhuma regra atendida - arquivo ignorado", "path", path,
+			"container", mi.Container, "video_codec", mi.VideoCodec,
+			"audio_codecs", mi.AudioCodecs,
+			"reason", e.rules.DescribeMiss(mi))
 		return false
 	}
 	driver := e.rules.Global().DefaultDriver
 	if _, ok := e.engines[driver]; !ok {
-		e.logf("driver não registrado: %s", driver)
+		e.log.Error("driver não registrado", "path", path, "driver", driver)
 		return false
 	}
 	if existing, err := e.store.FindByPath(path); err == nil && existing != nil {
@@ -117,10 +126,10 @@ func (e *Engine) HandleDiscovered(path string) bool {
 		CreatedAt: time.Now(),
 	}
 	if err := e.store.CreateJob(job); err != nil {
-		e.logf("criar job %s: %v", path, err)
+		e.log.Error("falha ao criar job", "path", path, "error", err.Error())
 		return false
 	}
-	e.logf("job enfileirado %s (%s)", path, job.ID[:8])
+	e.log.Info("job enfileirado", "job_id", job.ID, "path", job.Path, "driver", job.Driver)
 	return true
 }
 
@@ -131,7 +140,7 @@ func (e *Engine) startWorkers(ctx context.Context) {
 		go e.workerLoop(ctx)
 	}
 	if err := e.bootRecover(); err != nil {
-		e.logf("recuperação de boot: %v", err)
+		e.log.Error("recuperação de boot falhou", "error", err.Error())
 	}
 }
 
@@ -147,7 +156,7 @@ func (e *Engine) bootRecover() error {
 	if err != nil {
 		return err
 	}
-	e.logf("recuperados %d jobs de run anterior", len(jobs))
+	e.log.Info("recuperados jobs de run anterior", "count", len(jobs))
 	return nil
 }
 
@@ -159,12 +168,12 @@ func (e *Engine) RunOnce(ctx context.Context, files []string) error {
 	for _, f := range files {
 		fi, err := os.Stat(f)
 		if err != nil {
-			e.logf("arquivo inacessível em -file: %s (%v)", f, err)
+			e.log.Warn("arquivo inacessível em -file", "path", f, "error", err.Error())
 			skipped++
 			continue
 		}
 		if fi.IsDir() {
-			e.logf("skip diretório em -file: %s", f)
+			e.log.Warn("skip diretório em -file", "path", f)
 			skipped++
 			continue
 		}
@@ -215,7 +224,7 @@ func (e *Engine) workerLoop(ctx context.Context) {
 		// espera por jobs
 		job, err := e.store.NextPendingJob()
 		if err != nil {
-			e.logf("next job: %v", err)
+			e.log.Warn("falha ao buscar próximo job", "error", err.Error())
 			time.Sleep(500 * time.Millisecond)
 			continue
 		}
@@ -234,10 +243,11 @@ func (e *Engine) workerLoop(ctx context.Context) {
 func (e *Engine) runJob(ctx context.Context, job *Job) {
 	now := time.Now()
 	if err := e.store.UpdateStatus(job.ID, StatusInProgress, &now, nil, ""); err != nil {
-		e.logf("marcar in_progress %s: %v", job.ID, err)
+		e.log.Error("falha ao marcar in_progress", "job_id", job.ID, "error", err.Error())
 		return
 	}
 	e.emit(JobEvent{Kind: EventJobStart, JobID: job.ID, FilePath: job.Path, Driver: job.Driver})
+	e.log.Info("job iniciado", "job_id", job.ID, "path", job.Path, "driver", job.Driver)
 
 	cl, err := NewCleanup(job.Path, e.staging)
 	if err != nil {
@@ -274,6 +284,8 @@ loop:
 			if !ok {
 				break loop
 			}
+			e.log.Debug("progresso transcode", "job_id", job.ID, "path", job.Path,
+				"progress", fr)
 			e.emit(JobEvent{Kind: EventJobProgress, JobID: job.ID, FilePath: job.Path, Driver: job.Driver, Progress: fr})
 		}
 	}
@@ -293,7 +305,10 @@ loop:
 		cl.Abort()
 		fin := time.Now()
 		e.store.UpdateStatus(job.ID, StatusRolledBack, nil, &fin, "")
-		e.logf("rollback %s: economia %.2f%% < %.2f%%", job.Path, m.CompressionRatioPct, e.integrity.MinSavingPct)
+		e.log.Info("job revertido (economia insuficiente)",
+			"job_id", job.ID, "path", job.Path,
+			"savings_pct", m.CompressionRatioPct, "min_savings_pct", e.integrity.MinSavingPct,
+			"saved_bytes", m.SavedBytes)
 		e.emit(JobEvent{Kind: EventJobComplete, JobID: job.ID, FilePath: job.Path, Driver: job.Driver, Success: false, SizeDiff: m.SavedBytes})
 		return
 	}
@@ -307,14 +322,16 @@ loop:
 	e.store.UpdateMetrics(job.ID, m)
 	fin := time.Now()
 	e.store.UpdateStatus(job.ID, StatusCompleted, nil, &fin, "")
-	e.logf("completo %s: salvo %d bytes (%.2f%%)", job.Path, m.SavedBytes, m.CompressionRatioPct)
+	e.log.Info("job completo", "job_id", job.ID, "path", job.Path, "driver", job.Driver,
+		"saved_bytes", m.SavedBytes, "savings_pct", m.CompressionRatioPct,
+		"duration_ms", time.Since(now).Milliseconds())
 	e.emit(JobEvent{Kind: EventJobComplete, JobID: job.ID, FilePath: job.Path, Driver: job.Driver, Success: true, SizeDiff: m.SavedBytes})
 }
 
 func (e *Engine) fail(job *Job, msg string) {
 	fin := time.Now()
 	_ = e.store.UpdateStatus(job.ID, StatusFailed, nil, &fin, msg)
-	e.logf("falha %s: %s", job.Path, msg)
+	e.log.Error("job falhou", "job_id", job.ID, "path", job.Path, "driver", job.Driver, "error", msg)
 	e.emit(JobEvent{Kind: EventJobError, JobID: job.ID, FilePath: job.Path, Driver: job.Driver, Error: msg})
 }
 
@@ -325,7 +342,15 @@ func (e *Engine) CloseCancellation() {
 
 // StartWatcher inicializa o watcher com debounce e o liga ao engine (RF01).
 func (e *Engine) StartWatcher(stableFor time.Duration) error {
-	w, err := NewWatcher(stableFor, func(path string) { e.HandleDiscovered(path) })
+	return e.StartWatcherWithScan(stableFor, defaultScanInterval)
+}
+
+// defaultScanInterval é o intervalo padrão da varredura periódica de fallback.
+const defaultScanInterval = time.Minute
+
+// StartWatcherWithScan inicializa o watcher com debounce e varredura periódica.
+func (e *Engine) StartWatcherWithScan(stableFor, scanEvery time.Duration) error {
+	w, err := NewWatcher(stableFor, func(path string) { e.HandleDiscovered(path) }, e.log, scanEvery)
 	if err != nil {
 		return err
 	}
@@ -333,10 +358,14 @@ func (e *Engine) StartWatcher(stableFor time.Duration) error {
 	return nil
 }
 
+// SetScanInterval define o intervalo da varredura periódica de fallback.
+// Deve ser chamado antes de WatchDir; 0 desliga a varredura.
+func (e *Engine) SetScanInterval(d time.Duration) { e.scanEvery = d }
+
 // WatchDir passa a monitorar um diretório (recursivo).
 func (e *Engine) WatchDir(dir string) error {
 	if e.watcher == nil {
-		if err := e.StartWatcher(5e9); err != nil {
+		if err := e.StartWatcherWithScan(5e9, e.scanEvery); err != nil {
 			return err
 		}
 	}

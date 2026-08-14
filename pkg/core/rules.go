@@ -279,30 +279,142 @@ func (r *RulesEngine) Evaluate(mi MediaInfo) (RuleOutcome, TargetSpec, error) {
 }
 
 func ruleMatches(rule Rule, mi MediaInfo) bool {
-	if !rule.Match.Container.matches(mi.Container) {
+	if !containerMatches(rule.Match.Container, mi.Container) {
 		return false
 	}
 	if !rule.Match.Video.Codec.matches(mi.VideoCodec) {
 		return false
 	}
-	// Áudio: casa se qualquer um dos codecs de áudio satisfizer o critério.
-	audio := rule.Match.Audio.Codec
-	if len(audio.Values) > 0 && !anyMatches(audio.Values, mi.AudioCodecs) {
-		return false
-	}
+	// O áudio NÃO é impeditivo: critérios de áudio podem existir nas regras
+	// como intenção, mas um codec de áudio que não casa não impede a conversão
+	// do vídeo. O `convert.audio` determina a saída (habitualmente `copy`, sem
+	// perda geracional).
 	return true
 }
 
-func anyMatches(needles []string, haystack []string) bool {
-	for _, h := range haystack {
-		h = strings.ToLower(h)
-		for _, n := range needles {
-			if n == h {
-				return true
+// containerAliases NORMALiza nomes de container: regras costumam usar extensões
+// amigáveis ("mkv", "mp4"), enquanto o ffprobe reporta o format_name real
+// ("matroska,webm", "mov,mp4,m4a,3gp,3g2,mj2"). O mapeamento abaixo une as duas
+// visões para que "container: mkv" corresponda a arquivos matroska reais.
+var containerAliases = map[string][]string{
+	"mkv":           {"mkv", "matroska"},
+	"matroska":      {"mkv", "matroska"},
+	"webm":          {"webm"},
+	"mp4":           {"mp4", "mov"},
+	"mov":           {"mp4", "mov"},
+	"m4v":           {"mp4"},
+	"m4a":           {"mp4"},
+	"avi":           {"avi"},
+	"mpegts":        {"mpegts", "ts"},
+	"ts":            {"mpegts", "ts"},
+	"m2ts":          {"m2ts"},
+	"flv":           {"flv"},
+	"ogg":           {"ogg"},
+	"wmv":           {"wmv"},
+	"auto":          {}, // coringa
+}
+
+// containerMatches compara o container reportado pelo prober contra os valores
+// da regra, normalizando format_name do ffprobe (lista separada por vírgula)
+// e aliases (ex.: matroska ↔ mkv). Critério vazio é coringa (casa com tudo).
+func containerMatches(crit Item, container string) bool {
+	if len(crit.Values) == 0 {
+		return true
+	}
+	for _, c := range containerSet(normalizeContainer(container)) {
+		for _, want := range crit.Values {
+			want = strings.ToLower(strings.TrimSpace(want))
+			if want == "" {
+				continue
+			}
+			for _, alias := range containerAliases[want] {
+				if alias == c {
+					return true
+				}
 			}
 		}
 	}
 	return false
+}
+
+// normalizeContainer converte o format_name (ou extensão) numa lista de tokens.
+func normalizeContainer(v string) []string {
+	return strings.Split(v, ",")
+}
+
+// containerSet expande cada token pela tabela de aliases num conjunto canônico.
+func containerSet(tokens []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(s string) {
+		if s != "" && !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	for _, t := range tokens {
+		t = strings.ToLower(strings.TrimSpace(t))
+		if t == "" {
+			continue
+		}
+		if al, ok := containerAliases[t]; ok && len(al) > 0 {
+			for _, a := range al {
+				add(a)
+			}
+		} else {
+			add(t)
+		}
+	}
+	return out
+}
+
+// DescribeMiss gera um diagnóstico de por que cada regra não casou com a mídia.
+// Para cada regra são apontados os critérios (container/video) que falharam,
+// mostrando o valor real da mídia vs. os valores aceitos pela regra. O áudio
+// não é reportado como falha, pois não é impeditivo para a conversão.
+func (r *RulesEngine) DescribeMiss(mi MediaInfo) string {
+	var parts []string
+	for _, rule := range r.file.Rules {
+		var fails []string
+		if crit, ok := containerMismatch(rule.Match.Container, mi.Container); !ok {
+			fails = append(fails, "container("+crit+")")
+		}
+		if crit, ok := itemMismatch(rule.Match.Video.Codec, mi.VideoCodec); !ok {
+			fails = append(fails, "video.codec("+crit+")")
+		}
+		switch {
+		case len(fails) == 0:
+			parts = append(parts, rule.Name+": OK")
+		default:
+			parts = append(parts, fmt.Sprintf("%s: %s", rule.Name, strings.Join(fails, "; ")))
+		}
+	}
+	return fmt.Sprintf("[%s]", strings.Join(parts, "; "))
+}
+
+// itemMismatch relata critério não satisfeito; (reason, false) se falhou.
+func itemMismatch(crit Item, actual string) (string, bool) {
+	if len(crit.Values) == 0 {
+		return "", true // coringa
+	}
+	actual = strings.ToLower(actual)
+	for _, v := range crit.Values {
+		if v == actual {
+			return "", true
+		}
+	}
+	return fmt.Sprintf("media=%s, esperado=%v", actual, crit.Values), false
+}
+
+// containerMismatch relata por que o container da mídia não casou com a regra.
+func containerMismatch(crit Item, container string) (string, bool) {
+	if len(crit.Values) == 0 {
+		return "", true // coringa
+	}
+	if containerMatches(crit, container) {
+		return "", true
+	}
+	return fmt.Sprintf("media=%v, esperado=%v", container, crit.Values), false
 }
 
 func mergeSpec(c ConvertSpec, def RuleDefaults) TargetSpec {

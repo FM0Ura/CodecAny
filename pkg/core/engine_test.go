@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -37,7 +38,7 @@ func setupEngine(t *testing.T, origSize, outSize int64) (*Engine, chan JobEvent,
 		Engines: []TranscoderEngine{&mockTranscoder{outputSize: outSize}},
 		Workers: 1,
 		Events:  events,
-		Log:     os.Stderr,
+		Logger:  slog.New(slog.NewTextHandler(os.Stderr, nil)),
 	})
 	if err != nil {
 		t.Fatal(err)

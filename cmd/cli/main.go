@@ -3,15 +3,20 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/FM0Ura/codecany/pkg/adapters/ffmpeg"
 	"github.com/FM0Ura/codecany/pkg/core"
+	"github.com/FM0Ura/codecany/pkg/logger"
 )
 
 func main() {
@@ -21,6 +26,9 @@ func main() {
 	rules := flag.String("rules", "rules.yaml", "arquivo de regras YAML/JSON")
 	workers := flag.Int("workers", 1, "número de workers")
 	jsonLog := flag.Bool("json", false, "log estruturado em JSON")
+	logDir := flag.String("log-dir", "logs", "pasta dos arquivos de log")
+	logLevel := flag.String("log-level", "info", "nível de log (debug|info|warn|error)")
+	scanInterval := flag.String("scan-interval", "1m", "intervalo da varredura periódica de fallback (ex.: 30s, 5m; 0 desliga)")
 	flag.Var(&dirs, "dir", "diretório a monitorar (repita para vários)")
 	flag.Var(&files, "file", "arquivo específico a processar uma vez (repita para vários)")
 	flag.Parse()
@@ -29,20 +37,33 @@ func main() {
 		os.Exit(2)
 	}
 
-	events := make(chan core.JobEvent, 256)
-	go consumeEvents(events, *jsonLog)
-
-	eng, err := buildEngine(*store, *rules, *workers, events)
+	log, err := logger.New(logger.Config{
+		Dir:         *logDir,
+		JSONConsole: *jsonLog,
+		Level:       *logLevel,
+	})
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(os.Stderr, "logger:", err)
 		os.Exit(1)
 	}
 
+	events := make(chan core.JobEvent, 256)
+	go frameProgress(events, log)
+
+	scanEvery, err := time.ParseDuration(*scanInterval)
+	if err != nil {
+		logger.Fatal(log, fmt.Errorf("scan-interval: %w", err))
+	}
+
+	eng, err := buildEngine(*store, *rules, *workers, events, log)
+	if err != nil {
+		logger.Fatal(log, err)
+	}
+	eng.SetScanInterval(scanEvery)
+
 	if len(files) > 0 {
 		if err := eng.RunOnce(context.Background(), files); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			eng.Shutdown()
-			os.Exit(1)
+			logger.Fatal(log, err)
 		}
 		eng.Shutdown()
 		return
@@ -50,7 +71,7 @@ func main() {
 
 	for _, d := range dirs {
 		if err := eng.WatchDir(d); err != nil {
-			fmt.Fprintf(os.Stderr, "monitorar %s: %v\n", d, err)
+			log.Error("falha ao monitorar diretório", "dir", d, "error", err.Error())
 		}
 	}
 
@@ -58,7 +79,7 @@ func main() {
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sig
-		fmt.Fprintln(os.Stderr, "shutdown... abortando jobs")
+		log.Warn("shutdown solicitado, abortando jobs")
 		eng.CloseCancellation()
 	}()
 
@@ -77,7 +98,7 @@ func workCtx(sig chan os.Signal) context.Context {
 	return ctx
 }
 
-func buildEngine(storePath, rulesPath string, workers int, events chan core.JobEvent) (*core.Engine, error) {
+func buildEngine(storePath, rulesPath string, workers int, events chan core.JobEvent, log *slog.Logger) (*core.Engine, error) {
 	s, err := core.NewStore(storePath)
 	if err != nil {
 		return nil, fmt.Errorf("store: %w", err)
@@ -93,36 +114,90 @@ func buildEngine(storePath, rulesPath string, workers int, events chan core.JobE
 		Engines: []core.TranscoderEngine{ffmpeg.NewTranscode()},
 		Workers: workers,
 		Events:  events,
-		Log:     os.Stderr,
+		Logger:  log,
 	})
 }
 
-func consumeEvents(events chan core.JobEvent, jsonLog bool) {
+// frameProgress consome eventos nativos e exibe o progresso da conversão.
+// Em terminal, desenha uma barra de progresso inline; caso contrário, registra
+// via slog de forma esparsa (a cada 1%).
+func frameProgress(events chan core.JobEvent, log *slog.Logger) {
+	render := isTerminal(os.Stderr)
+	bar := newProgressBar(os.Stderr)
+	var lastPct = map[string]int{}
 	for ev := range events {
-		if jsonLog {
-			b, _ := json.Marshal(ev)
-			fmt.Fprintln(os.Stderr, string(b))
-			continue
-		}
-		id := ev.JobID
-		if len(id) > 8 {
-			id = id[:8]
-		}
 		switch ev.Kind {
 		case core.EventJobStart:
-			fmt.Fprintf(os.Stderr, "[job:%s] start %s\n", id, ev.FilePath)
-		case core.EventJobProgress:
-			fmt.Fprintf(os.Stderr, "[job:%s] %.0f%%\n", id, ev.Progress*100)
-		case core.EventJobComplete:
-			if ev.Success {
-				fmt.Fprintf(os.Stderr, "[job:%s] completo %s (diff %d bytes)\n", id, ev.FilePath, ev.SizeDiff)
-			} else {
-				fmt.Fprintf(os.Stderr, "[job:%s] revertido %s (economia insuficiente)\n", id, ev.FilePath)
+			if render {
+				bar.endl(ev.FilePath)
 			}
-		case core.EventJobError:
-			fmt.Fprintf(os.Stderr, "[job:%s] erro: %s\n", id, ev.Error)
+			log.Info("job iniciado", "job_id", ev.JobID, "path", ev.FilePath, "driver", ev.Driver)
+		case core.EventJobProgress:
+			pct := int(ev.Progress * 100)
+			if render {
+				bar.update(ev.JobID, ev.FilePath, pct)
+				continue
+			}
+			if pct >= 100 || pct-lastPct[ev.JobID] >= 1 {
+				lastPct[ev.JobID] = pct
+				log.Info("progresso", "job_id", ev.JobID, "path", ev.FilePath,
+					"progress_pct", pct)
+			}
+		case core.EventJobComplete, core.EventJobError:
+			if render {
+				bar.endl(ev.FilePath) // finaliza a linha da barra
+			}
 		}
 	}
+}
+
+// shortID reduz o UUID do job para exibição compacta.
+func shortID(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
+}
+
+// isTerminal informa se o writer é um terminal (fífio tty), habilitando a barra.
+func isTerminal(w *os.File) bool {
+	fi, err := w.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
+
+// progressBar desenha uma barra de progresso reutilizando a linha atual do
+// terminal via retorno de carro (\r).
+type progressBar struct {
+	w     io.Writer
+	width int
+}
+
+func newProgressBar(w io.Writer) *progressBar {
+	return &progressBar{w: w, width: 24}
+}
+
+// update redesenha a barra para o job em questão. O progresso é derivado do
+// evento mais recente; múltiplos jobs concorrentes refletem o último recebido.
+func (b *progressBar) update(jobID, path string, pct int) {
+	if pct < 0 {
+		pct = 0
+	}
+	if pct > 100 {
+		pct = 100
+	}
+	filled := pct * b.width / 100
+	bar := strings.Repeat("=", filled)
+	if filled < b.width {
+		bar += ">"
+		bar += strings.Repeat(" ", b.width-filled-1)
+	}
+	line := fmt.Sprintf("\r[%s] %s %3d%% %s", shortID(jobID), filepath.Base(path), pct, bar)
+	fmt.Fprint(b.w, line)
+}
+
+// endl encerra a linha atual da barra com um salto de linha.
+func (b *progressBar) endl(path string) {
+	fmt.Fprintf(b.w, "\r%s\n", strings.Repeat(" ", 8)) // limpa a linha
 }
 
 // multiFlag acumula valores repetidos de -dir.

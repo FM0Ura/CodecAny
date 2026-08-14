@@ -21,7 +21,7 @@ global:
   defaults:
     video:
       codec: hevc
-      crf: 24
+      crf: 20
       preset: slow
     audio:
       codec: copy
@@ -38,13 +38,13 @@ rules:
       video:
         codec: h264          # aceita: h264
       audio:
-        codec: [aac, ac3]    # lista = casa qualquer um
+        codec: [aac, ac3]    # não impeditivo: áudio divergente não bloqueia
     convert:
       video:
         codec: hevc
         preset: medium
       audio:
-        codec: copy
+        codec: copy          # mantém áudio original (sem perda geracional)
       container: mkv
 
   # 2) Vídeo AV1 → nunca converter

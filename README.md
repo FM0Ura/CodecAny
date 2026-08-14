@@ -78,6 +78,7 @@ Veja o exemplo completo em [`examples/rules.yaml`](examples/rules.yaml). Resumo:
 
 - **First-match wins** — a primeira regra que casar vence; regras específicas devem vir antes das genéricas.
 - **`match`** por igualdade escalar (`codec: h264`) ou lista OR (`codec: [aac, ac3]`).
+- **Áudio não é impeditivo** — codecs de áudio divergentes não bloqueiam a conversão de vídeo; o `convert.audio` define a saída (habitualmente `copy`, sem perda).
 - **`action: skip`** define regras de "não converter".
 - **`global.space_saving.min_saving_pct`** define o limite de rollback (default **15%**).
 - **`ignore`** permite pular caminhos, sufixos e arquivos abaixo de um tamanho mínimo.
