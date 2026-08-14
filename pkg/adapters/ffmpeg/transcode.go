@@ -31,28 +31,103 @@ func buildArgs(target core.TargetSpec) []string {
 	args := []string{"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1"}
 
 	if target.VideoCodec != "" {
-		args = append(args, "-c:v", target.VideoCodec)
-		if target.VideoCodec != "copy" {
-			if target.VideoCRF > 0 {
-				args = append(args, "-crf", strconv.Itoa(target.VideoCRF))
+		codec := target.VideoCodec
+		// Mapeia codecs genéricos para encoders recomendados
+		if codec == "hevc" {
+			codec = "libx265"
+		} else if codec == "av1" {
+			if target.VideoLossless {
+				codec = "libaom-av1"
+			} else {
+				codec = "libsvtav1"
 			}
-			if target.VideoPreset != "" {
-				args = append(args, "-preset", target.VideoPreset)
+		}
+
+		args = append(args, "-c:v", codec)
+
+		if codec != "copy" {
+			// Preset
+			preset := target.VideoPreset
+			if preset == "" {
+				if codec == "libx265" {
+					preset = "slow"
+				} else if codec == "libsvtav1" {
+					preset = "5"
+				} else if codec == "libaom-av1" {
+					preset = "4"
+				}
+			}
+			if preset != "" {
+				args = append(args, "-preset", preset)
+			}
+
+			// Lógica de Sem Perdas (Lossless) vs Com Perdas (Lossy)
+			if target.VideoLossless {
+				if codec == "libx265" {
+					args = append(args, "-x265-params", "lossless=1:open-gop=0")
+				} else if codec == "libaom-av1" {
+					args = append(args, "-crf", "0", "-aom-params", "lossless=1")
+				} else {
+					args = append(args, "-crf", "0")
+				}
+			} else {
+				// Com perdas (Lossy)
+				crf := target.VideoCRF
+				if crf == 0 {
+					if codec == "libx265" {
+						crf = 20
+					} else if codec == "libsvtav1" {
+						crf = 28
+					}
+				}
+				if crf > 0 {
+					args = append(args, "-crf", strconv.Itoa(crf))
+				}
+
+				// pix_fmt yuv420p10le para evitar color banding
+				if codec == "libx265" || codec == "libsvtav1" {
+					args = append(args, "-pix_fmt", "yuv420p10le")
+				}
+
+				// Parâmetros específicos
+				if codec == "libx265" {
+					args = append(args, "-x265-params", "open-gop=0")
+				} else if codec == "libsvtav1" {
+					args = append(args, "-svtav1-params", "tune=0")
+				}
 			}
 		}
 	}
+
 	if target.AudioCodec != "" {
 		args = append(args, "-c:a", target.AudioCodec)
 		if target.AudioBitrate != "" && target.AudioCodec != "copy" {
 			args = append(args, "-b:a", target.AudioBitrate)
 		}
+	} else {
+		// Preserva o áudio surround original fazendo cópia direta se não especificado
+		args = append(args, "-c:a", "copy")
 	}
+
+	// Sempre copia legendas
+	args = append(args, "-c:s", "copy")
+
 	return args
 }
 
 // Transcode executa o ffmpeg e emite progresso (0..1) no canal retornado.
 func (t *Transcode) Transcode(input, output string, media core.MediaInfo, target core.TargetSpec) (<-chan float64, error) {
-	args := append([]string{"-i", input}, buildArgs(target)...)
+	// Monta mapeamento completo dos fluxos para evitar perda de faixas secundárias
+	args := []string{"-i", input}
+	if media.HasVideo {
+		args = append(args, "-map", "0:v")
+	}
+	if media.HasAudio {
+		args = append(args, "-map", "0:a")
+	}
+	args = append(args, "-map", "0:s?", "-map", "0:t?")
+
+	args = append(args, buildArgs(target)...)
 	args = append(args, output)
 
 	cmd := exec.Command(t.bin, args...)
