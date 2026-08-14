@@ -1,10 +1,13 @@
 package core
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // Cleanup rastreia os resíduos de um Job e garante a remoção via Defer Pattern
@@ -47,6 +50,10 @@ func (c *Cleanup) Track(path string) { c.tmpFiles = append(c.tmpFiles, path) }
 // Commit realiza a troca atômica do output no lugar do original e purga resíduos.
 // Sequência: renomeia original → .bak local, output → original, remove .bak
 // e remove toda a staging. (FINALIZING bem-sucedido)
+//
+// O staging pode ficar em outro filesystem que o original; nesse caso o rename
+// cruzaria devices (EXDEV) e falharia, então há fallback que copia o output
+// para um temporário na própria pasta do original (mesmo device) antes da troca.
 func (c *Cleanup) Commit() error {
 	if _, err := os.Stat(c.output); err != nil {
 		return fmt.Errorf("output ausente: %w", err)
@@ -54,7 +61,7 @@ func (c *Cleanup) Commit() error {
 	if err := os.Rename(c.jobPath, c.localBak); err != nil {
 		return fmt.Errorf("backup original: %w", err)
 	}
-	if err := os.Rename(c.output, c.jobPath); err != nil {
+	if err := replaceAtomic(c.output, c.jobPath); err != nil {
 		os.Rename(c.localBak, c.jobPath) // reverte
 		return fmt.Errorf("substituição atômica: %w", err)
 	}
@@ -87,7 +94,68 @@ func (c *Cleanup) Abort() error {
 	return nil
 }
 
-// CommitFiles é um alias de Commit para uso em testes/lengton da engine.
+// replaceAtomic substitui dst por src de forma atômica quando possível. Se os
+// arquivos estão em filesystems diferentes (EXDEV), copia src para um temporário
+// no diretório de dst (mesmo device) e então renomeia — a troca final fica atômica.
+func replaceAtomic(src, dst string) error {
+	err := os.Rename(src, dst)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, syscall.EXDEV) {
+		return err
+	}
+
+	target, err := copyFile(src, filepath.Dir(dst), copyName(filepath.Base(dst)))
+	if err != nil {
+		return fmt.Errorf("copiar para troca: %w", err)
+	}
+	if err := os.Rename(target, dst); err != nil {
+		os.Remove(target)
+		return fmt.Errorf("troca no device local: %w", err)
+	}
+	return nil
+}
+
+// copyName gera o nome de temp usado durante a troca cross-device.
+func copyName(base string) string {
+	return "." + base + ".codecany.tmp"
+}
+
+// copyFile copia o conteúdo (preservando permissões) de src para destDir/destName.
+func copyFile(src, destDir, destName string) (string, error) {
+	in, err := os.Open(src)
+	if err != nil {
+		return "", err
+	}
+	defer in.Close()
+	fi, err := in.Stat()
+	if err != nil {
+		return "", err
+	}
+	out := filepath.Join(destDir, destName)
+	tmp := out + ".copy"
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, fi.Mode().Perm())
+	if err != nil {
+		return "", err
+	}
+	if _, err := io.Copy(f, in); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return "", err
+	}
+	if err := os.Rename(tmp, out); err != nil {
+		os.Remove(tmp)
+		return "", err
+	}
+	return out, nil
+}
+
+// CommitFiles é um alias de Commit para uso em testes da engine.
 func (c *Cleanup) CommitFiles(outputPath string) error {
 	_ = outputPath
 	return c.Commit()
