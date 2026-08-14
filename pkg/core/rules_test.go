@@ -229,3 +229,34 @@ rules:
 		t.Fatalf("format_name de mp4 deveria casar container mp4; obteve %v", outcome)
 	}
 }
+
+func TestRulesLossless(t *testing.T) {
+	content := `
+version: 1
+global:
+  staging_dir: /tmp/xs
+  defaults:
+    video: { codec: hevc, crf: 22, preset: slow }
+rules:
+  - name: lossless_rule
+    match:
+      video: { codec: h264 }
+    convert:
+      video: { codec: hevc, lossless: true }
+`
+	r := mustEngine(t, content)
+	mi := MediaInfo{Container: "mkv", VideoCodec: "h264"}
+	outcome, spec, err := r.Evaluate(mi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome != OutcomeConvert {
+		t.Fatalf("esperava convert, obteve %v", outcome)
+	}
+	if !spec.VideoLossless {
+		t.Errorf("esperava VideoLossless = true, obteve false")
+	}
+	if spec.VideoCRF != 0 {
+		t.Errorf("esperava VideoCRF = 0 para lossless, obteve %d (sobrescreveu com default)", spec.VideoCRF)
+	}
+}
