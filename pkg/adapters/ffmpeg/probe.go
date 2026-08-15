@@ -32,11 +32,17 @@ type ffprobeResult struct {
 		Duration   string `json:"duration"`
 	} `json:"format"`
 	Streams []struct {
-		CodecType string `json:"codec_type"`
-		CodecName string `json:"codec_name"`
-		BitRate   string `json:"bit_rate"`
-		Width     int    `json:"width"`
-		Height    int    `json:"height"`
+		CodecType   string `json:"codec_type"`
+		CodecName   string `json:"codec_name"`
+		BitRate     string `json:"bit_rate"`
+		Width       int    `json:"width"`
+		Height      int    `json:"height"`
+		Disposition struct {
+			// AttachedPic é 1 quando o stream de vídeo é, na verdade, uma
+			// imagem anexada (capa de álbum/thumbnail) e não vídeo de
+			// movimento real — ffprobe reporta isso via disposition.
+			AttachedPic int `json:"attached_pic"`
+		} `json:"disposition"`
 	} `json:"streams"`
 }
 
@@ -59,20 +65,41 @@ func (p *Prober) Probe(path string) (core.MediaInfo, error) {
 	}
 	mi := core.MediaInfo{Path: path, Container: r.Format.FormatName}
 	mi.DurationSec = parseDuration(r.Format.Duration)
+	// videoIdx conta TODOS os streams de tipo vídeo (incluindo capas
+	// attached_pic), pois é esse o espaço de índices usado pelo seletor
+	// ffmpeg "0:v:N" — precisa bater com o índice armazenado abaixo.
+	videoIdx := 0
 	for _, s := range r.Streams {
 		switch s.CodecType {
 		case "video":
-			if !mi.HasVideo {
+			if s.Disposition.AttachedPic == 1 {
+				// Capa de álbum/thumbnail embutida: não é vídeo real, então
+				// não deve virar mi.VideoCodec/Width/Height (RF02 — bug de
+				// mis-seleção de stream). Guardamos o índice para que
+				// transcode.go possa mapeá-la separadamente e copiá-la
+				// sem recodificar.
+				mi.CoverArtStreamIndexes = append(mi.CoverArtStreamIndexes, videoIdx)
+			} else if !mi.HasVideo {
+				// Primeiro stream de vídeo "real" (não attached_pic)
+				// encontrado — é esse que representa o conteúdo do filme
+				// para fins de casamento de regras e recodificação.
 				mi.HasVideo = true
 				mi.VideoCodec = s.CodecName
 				mi.VideoBitrate = parseBitrate(s.BitRate)
 				mi.Width, mi.Height = s.Width, s.Height
+				mi.VideoStreamIndex = videoIdx
 			}
+			videoIdx++
 		case "audio":
 			mi.HasAudio = true
 			mi.AudioCodecs = append(mi.AudioCodecs, s.CodecName)
+		case "subtitle":
+			mi.SubtitleCodecs = append(mi.SubtitleCodecs, s.CodecName)
 		}
 	}
+	// Se TODOS os streams de vídeo forem attached_pic (arquivo só com capa,
+	// sem vídeo de movimento), mi.HasVideo permanece false: uma capa isolada
+	// não é conteúdo de vídeo real para fins de casamento de regras.
 
 	base := strings.TrimSuffix(path, filepath.Ext(path))
 	dir := filepath.Dir(path)

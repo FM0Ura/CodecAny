@@ -122,7 +122,7 @@ func TestBuildArgs(t *testing.T) {
 			name: "H265 NVENC lossless",
 			target: core.TargetSpec{
 				VideoCodec:    "hevc",
-				VideoHWAccel: "nvenc",
+				VideoHWAccel:  "nvenc",
 				VideoLossless: true,
 			},
 			want: []string{
@@ -142,6 +142,38 @@ func TestBuildArgs(t *testing.T) {
 				"-c:v", "copy", "-c:v:0", "libx265", "-preset", "slow", "-crf", "20",
 				"-pix_fmt", "yuv420p10le", "-x265-params", "open-gop=0",
 				"-c:s", "mov_text",
+			},
+		},
+		{
+			// Bug C: vendor de hwaccel não reconhecido (typo) deve cair
+			// silenciosamente para o encoder por software (libx265), assim
+			// como o caminho "sem hwaccel".
+			name: "H265 unrecognized hwaccel falls back to software",
+			target: core.TargetSpec{
+				VideoCodec:   "hevc",
+				VideoHWAccel: "nvidia",
+			},
+			want: []string{
+				"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-stats_period", "0.1",
+				"-c:v", "copy", "-c:v:0", "libx265", "-preset", "slow", "-crf", "20",
+				"-pix_fmt", "yuv420p10le", "-x265-params", "open-gop=0",
+				"-c:s", "copy",
+			},
+		},
+		{
+			// Bug C: vendor reconhecido mas sem suporte ao codec base pedido
+			// (videotoolbox não tem encoder av1) também deve cair para
+			// software, respeitando VideoLossless como o ramo "sem hwaccel".
+			name: "AV1 videotoolbox unsupported falls back to software",
+			target: core.TargetSpec{
+				VideoCodec:   "av1",
+				VideoHWAccel: "videotoolbox",
+			},
+			want: []string{
+				"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-stats_period", "0.1",
+				"-c:v", "copy", "-c:v:0", "libsvtav1", "-preset", "5", "-crf", "28",
+				"-pix_fmt", "yuv420p10le", "-svtav1-params", "tune=0",
+				"-c:s", "copy",
 			},
 		},
 	}
@@ -176,5 +208,216 @@ func TestBuildArgs_DynamicAudio(t *testing.T) {
 	got := buildArgs(target, false, audioCodecs)
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("buildArgs() com áudio dinâmico = %v, want %v", got, want)
+	}
+}
+
+// TestBuildVideoMapArgs cobre o Bug A: com capa (attached_pic) + vídeo real
+// misturados, o vídeo real deve sempre virar o "-map" de índice de saída 0,
+// e a(s) capa(s) devem ser mapeadas em seguida (para permanecerem em "copy"
+// via o "-c:v copy" padrão de buildArgs).
+func TestBuildVideoMapArgs(t *testing.T) {
+	tests := []struct {
+		name  string
+		media core.MediaInfo
+		want  []string
+	}{
+		{
+			name:  "sem vídeo nenhum",
+			media: core.MediaInfo{},
+			want:  nil,
+		},
+		{
+			name: "apenas vídeo real, sem capa",
+			media: core.MediaInfo{
+				HasVideo:         true,
+				VideoStreamIndex: 0,
+			},
+			want: []string{"-map", "0:v:0"},
+		},
+		{
+			name: "capa é o stream 0 no arquivo, vídeo real é o stream 1",
+			media: core.MediaInfo{
+				HasVideo:              true,
+				VideoStreamIndex:      1,
+				CoverArtStreamIndexes: []int{0},
+			},
+			// O vídeo real (índice de entrada 1) deve ser mapeado PRIMEIRO,
+			// mesmo aparecendo depois da capa no container de origem, para
+			// garantir que caia no índice de SAÍDA 0 (alvo de "-c:v:0").
+			want: []string{"-map", "0:v:1", "-map", "0:v:0"},
+		},
+		{
+			name: "arquivo só com capa (sem vídeo real)",
+			media: core.MediaInfo{
+				HasVideo:              false,
+				CoverArtStreamIndexes: []int{0},
+			},
+			want: []string{"-map", "0:v:0"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildVideoMapArgs(tt.media)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("buildVideoMapArgs() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestBuildSubtitleMapArgs cobre o Bug B: ao gerar MP4, streams de legenda
+// baseados em imagem (PGS/VobSub/DVB) devem ser descartados do mapeamento;
+// fora do MP4, todos os streams devem ser mantidos.
+func TestBuildSubtitleMapArgs(t *testing.T) {
+	// Mix: 0=subrip (texto), 1=hdmv_pgs_subtitle (imagem), 2=ass (texto).
+	codecs := []string{"subrip", "hdmv_pgs_subtitle", "ass"}
+
+	t.Run("MP4 descarta apenas a legenda de imagem", func(t *testing.T) {
+		got := buildSubtitleMapArgs(codecs, true)
+		want := []string{"-map", "0:s:0", "-map", "0:s:2"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("buildSubtitleMapArgs(mp4) = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("não-MP4 mantém todos os streams", func(t *testing.T) {
+		got := buildSubtitleMapArgs(codecs, false)
+		want := []string{"-map", "0:s:0", "-map", "0:s:1", "-map", "0:s:2"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("buildSubtitleMapArgs(não-mp4) = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("todas as legendas são de imagem em MP4", func(t *testing.T) {
+		got := buildSubtitleMapArgs([]string{"dvd_subtitle", "dvb_subtitle"}, true)
+		if len(got) != 0 {
+			t.Errorf("buildSubtitleMapArgs() = %v, want vazio", got)
+		}
+	})
+}
+
+// TestResolveHWAccelEncoder cobre o Bug C: a tabela única de vendors deve
+// reconhecer combinações válidas e rejeitar vendors desconhecidos ou pares
+// vendor/codec sem suporte (ex.: videotoolbox+av1).
+func TestResolveHWAccelEncoder(t *testing.T) {
+	tests := []struct {
+		hw, codecBase  string
+		wantEncoder    string
+		wantRecognized bool
+	}{
+		{"nvenc", "hevc", "hevc_nvenc", true},
+		{"cuda", "h264", "h264_nvenc", true},
+		{"vaapi", "av1", "av1_vaapi", true},
+		{"qsv", "hevc", "hevc_qsv", true},
+		{"videotoolbox", "h264", "h264_videotoolbox", true},
+		{"videotoolbox", "av1", "", false}, // sem suporte a av1
+		{"nvidia", "hevc", "", false},      // vendor desconhecido (typo)
+		{"", "hevc", "", false},
+	}
+	for _, tt := range tests {
+		enc, recognized := resolveHWAccelEncoder(tt.hw, tt.codecBase)
+		if enc != tt.wantEncoder || recognized != tt.wantRecognized {
+			t.Errorf("resolveHWAccelEncoder(%q, %q) = (%q, %v), want (%q, %v)",
+				tt.hw, tt.codecBase, enc, recognized, tt.wantEncoder, tt.wantRecognized)
+		}
+	}
+}
+
+// TestBuildTranscodeArgs_CoverArtPlusRealVideo cobre o Bug A de ponta a
+// ponta: fonte com capa (stream de entrada 0) e vídeo real (stream de
+// entrada 1) deve mapear o vídeo real primeiro (índice de saída 0, alvo de
+// "-c:v:0") e a capa depois (permanece em "copy").
+func TestBuildTranscodeArgs_CoverArtPlusRealVideo(t *testing.T) {
+	media := core.MediaInfo{
+		HasVideo:              true,
+		VideoStreamIndex:      1,
+		CoverArtStreamIndexes: []int{0},
+		HasAudio:              true,
+	}
+	target := core.TargetSpec{VideoCodec: "hevc"}
+
+	got := buildTranscodeArgs("in.mkv", "out.mkv", media, target)
+	want := []string{
+		"-i", "in.mkv",
+		"-map", "0:v:1", "-map", "0:v:0",
+		"-map", "0:a",
+		"-map", "0:t?",
+		"-map_metadata", "0",
+		"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-stats_period", "0.1",
+		"-c:v", "copy", "-c:v:0", "libx265", "-preset", "slow", "-crf", "20",
+		"-pix_fmt", "yuv420p10le", "-x265-params", "open-gop=0",
+		"-c:s", "copy",
+		"out.mkv",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("buildTranscodeArgs() = %v, want %v", got, want)
+	}
+}
+
+// TestBuildTranscodeArgs_MP4DropsImageSubtitles cobre o Bug B de ponta a
+// ponta: ao gerar MP4 com um mix de legendas embutidas de texto e imagem,
+// só a de imagem deve ser descartada do mapeamento.
+func TestBuildTranscodeArgs_MP4DropsImageSubtitles(t *testing.T) {
+	media := core.MediaInfo{
+		HasVideo:         true,
+		VideoStreamIndex: 0,
+		SubtitleCodecs:   []string{"subrip", "hdmv_pgs_subtitle"},
+	}
+	target := core.TargetSpec{VideoCodec: "hevc", Container: "mp4"}
+
+	got := buildTranscodeArgs("in.mkv", "out.mp4", media, target)
+	want := []string{
+		"-i", "in.mkv",
+		"-map", "0:v:0",
+		"-map", "0:s:0",
+		"-map", "0:t?",
+		"-map_metadata", "0",
+		"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-stats_period", "0.1",
+		"-c:v", "copy", "-c:v:0", "libx265", "-preset", "slow", "-crf", "20",
+		"-pix_fmt", "yuv420p10le", "-x265-params", "open-gop=0",
+		"-c:s", "mov_text",
+		"out.mp4",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("buildTranscodeArgs() = %v, want %v", got, want)
+	}
+}
+
+// TestBuildTranscodeArgs_UnrecognizedHWAccelOmitsFlag cobre o Bug C de ponta
+// a ponta: um valor de VideoHWAccel não reconhecido não deve resultar em
+// nenhuma flag "-hwaccel" no comando final, mesmo caindo para software.
+func TestBuildTranscodeArgs_UnrecognizedHWAccelOmitsFlag(t *testing.T) {
+	media := core.MediaInfo{HasVideo: true, VideoStreamIndex: 0}
+	target := core.TargetSpec{VideoCodec: "hevc", VideoHWAccel: "nvidia"}
+
+	got := buildTranscodeArgs("in.mkv", "out.mkv", media, target)
+	for i, a := range got {
+		if a == "-hwaccel" {
+			t.Fatalf("buildTranscodeArgs() não deveria conter -hwaccel para vendor não reconhecido, got %v (índice %d)", got, i)
+		}
+	}
+	// O encoder por software ainda deve ser usado.
+	found := false
+	for _, a := range got {
+		if a == "libx265" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("buildTranscodeArgs() esperava fallback para libx265, got %v", got)
+	}
+}
+
+// TestBuildTranscodeArgs_RecognizedHWAccelKeepsFlag garante que o caso
+// reconhecido continua emitindo "-hwaccel" com o alias correto (nvenc->cuda).
+func TestBuildTranscodeArgs_RecognizedHWAccelKeepsFlag(t *testing.T) {
+	media := core.MediaInfo{HasVideo: true, VideoStreamIndex: 0}
+	target := core.TargetSpec{VideoCodec: "hevc", VideoHWAccel: "nvenc"}
+
+	got := buildTranscodeArgs("in.mkv", "out.mkv", media, target)
+	want := []string{"-hwaccel", "cuda"}
+	if len(got) < 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("buildTranscodeArgs()[:2] = %v, want %v", got[:min(2, len(got))], want)
 	}
 }

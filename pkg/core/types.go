@@ -18,17 +18,40 @@ const (
 
 // MediaInfo carrega os metadados técnicos extraídos pelo MediaProber (RF02).
 type MediaInfo struct {
-	Path          string   `json:"path"`
-	Container     string   `json:"container"`
-	VideoCodec    string   `json:"video_codec"`
-	VideoBitrate  int64    `json:"video_bitrate"`
-	Width         int      `json:"width"`
-	Height        int      `json:"height"`
-	AudioCodecs   []string `json:"audio_codecs"`
+	Path         string   `json:"path"`
+	Container    string   `json:"container"`
+	VideoCodec   string   `json:"video_codec"`
+	VideoBitrate int64    `json:"video_bitrate"`
+	Width        int      `json:"width"`
+	Height       int      `json:"height"`
+	AudioCodecs  []string `json:"audio_codecs"`
+
+	// SubtitleCodecs lista, na mesma ordem dos streams de legenda EMBUTIDOS
+	// no container de origem (não inclui os arquivos avulsos abaixo), o
+	// codec_name reportado pelo ffprobe (ex.: "subrip", "ass", "webvtt" para
+	// legendas de texto; "hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle"
+	// para legendas baseadas em imagem). Usado para decidir, ao gerar MP4,
+	// quais streams podem virar mov_text e quais precisam ser descartados.
+	SubtitleCodecs []string `json:"subtitle_codecs,omitempty"`
+
 	SubtitlePaths []string `json:"subtitle_paths"`
 	HasVideo      bool     `json:"has_video"`
 	HasAudio      bool     `json:"has_audio"`
 	DurationSec   float64  `json:"duration_sec"`
+
+	// VideoStreamIndex é o índice do stream de vídeo "real" escolhido pelo
+	// Probe entre TODOS os streams de tipo vídeo do container (ou seja, o
+	// índice usado pelo seletor ffmpeg "0:v:N"), ignorando streams marcados
+	// como capa/thumbnail (disposition.attached_pic). Só é significativo
+	// quando HasVideo é true.
+	VideoStreamIndex int `json:"video_stream_index"`
+
+	// CoverArtStreamIndexes lista os índices (entre os streams de tipo
+	// vídeo, mesmo espaço de índices de VideoStreamIndex) dos streams
+	// marcados como attached_pic (capa de álbum, thumbnail embutido etc).
+	// Esses streams devem ser preservados via "copy" e nunca recodificados
+	// com os parâmetros (CRF/preset) do vídeo real.
+	CoverArtStreamIndexes []int `json:"cover_art_stream_indexes,omitempty"`
 }
 
 // TargetSpec descreve o alvo de conversão extraído das regras (RF03).

@@ -34,6 +34,123 @@ func isHeavyLosslessAudio(codec string) bool {
 		codec == "lpcm"
 }
 
+// isMP4 decide se o alvo de conversão é um container MP4, seja pelo
+// TargetSpec.Container explícito ou pela extensão do arquivo de saída.
+func isMP4(target core.TargetSpec, output string) bool {
+	return target.Container == "mp4" || strings.HasSuffix(strings.ToLower(output), ".mp4")
+}
+
+// isImageSubtitleCodec identifica codecs de legenda BASEADOS EM IMAGEM
+// (bitmap), que nenhum player de mov_text consegue interpretar e que o
+// container MP4 também não sabe carregar via "copy". Legendas de texto
+// (subrip/ass/webvtt/mov_text...) retornam false.
+func isImageSubtitleCodec(codec string) bool {
+	switch strings.ToLower(codec) {
+	case "hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle":
+		return true
+	default:
+		return false
+	}
+}
+
+// buildVideoMapArgs monta as flags "-map" para os streams de vídeo do input
+// principal, garantindo que o stream de vídeo "real" (identificado pelo
+// Probe, ignorando capas/attached_pic) seja SEMPRE o primeiro a ser mapeado
+// — e portanto sempre o índice de saída 0, que é o índice que buildArgs()
+// mira com "-c:v:0" ao aplicar o codec/CRF/preset alvo. Eventuais streams de
+// capa (attached_pic) são mapeados em seguida e permanecem no "-c:v copy"
+// padrão de buildArgs (nunca recebem o codec/CRF do vídeo real).
+//
+// Isso corrige o bug de usar "-map 0:v" (mapeamento em bloco, que preserva a
+// ORDEM ORIGINAL dos streams do container): se a capa aparecer antes do
+// vídeo real no arquivo de origem, "-map 0:v" faria a capa cair no índice de
+// saída 0 e "-c:v:0" acabaria recodificando a capa com parâmetros de vídeo
+// de movimento, deixando o vídeo real intocado como "copy".
+func buildVideoMapArgs(media core.MediaInfo) []string {
+	var args []string
+	if media.HasVideo {
+		args = append(args, "-map", fmt.Sprintf("0:v:%d", media.VideoStreamIndex))
+	}
+	for _, idx := range media.CoverArtStreamIndexes {
+		args = append(args, "-map", fmt.Sprintf("0:v:%d", idx))
+	}
+	return args
+}
+
+// buildSubtitleMapArgs monta as flags "-map" para os streams de legenda
+// EMBUTIDOS no container de origem (não inclui os arquivos avulsos de
+// media.SubtitlePaths, que são sempre texto e mapeados separadamente).
+//
+// Ao gerar MP4, streams de legenda baseados em imagem (PGS/VobSub/DVB) são
+// DESCARTADOS do mapeamento: o MP4 não suporta esses codecs nativamente
+// ("copy" falha) e mov_text é um formato de texto (não consegue representar
+// bitmaps), então mapeá-los faria o ffmpeg abortar o job inteiro. Fora do
+// MP4, todos os streams de legenda são mantidos — comportamento idêntico ao
+// anterior ("-map 0:s?").
+func buildSubtitleMapArgs(subtitleCodecs []string, isMP4 bool) []string {
+	var args []string
+	for i, codec := range subtitleCodecs {
+		if isMP4 && isImageSubtitleCodec(codec) {
+			continue
+		}
+		args = append(args, "-map", fmt.Sprintf("0:s:%d", i))
+	}
+	return args
+}
+
+// hwaccelEncoders mapeia (vendor de hwaccel, em minúsculas) -> (codec base
+// solicitado -> encoder ffmpeg específico de hardware). É a fonte única de
+// verdade usada tanto por buildArgs() (para escolher o encoder) quanto por
+// Transcode() (para decidir se a flag "-hwaccel" deve ser emitida) — assim
+// os dois lugares nunca discordam sobre o que é um vendor/codec reconhecido.
+var hwaccelEncoders = map[string]map[string]string{
+	"nvenc": {"hevc": "hevc_nvenc", "h264": "h264_nvenc", "av1": "av1_nvenc"},
+	"cuda":  {"hevc": "hevc_nvenc", "h264": "h264_nvenc", "av1": "av1_nvenc"},
+	"vaapi": {"hevc": "hevc_vaapi", "h264": "h264_vaapi", "av1": "av1_vaapi"},
+	"qsv":   {"hevc": "hevc_qsv", "h264": "h264_qsv", "av1": "av1_qsv"},
+	// videotoolbox (macOS) não tem encoder av1 oficial no ffmpeg — ausência
+	// proposital, não esquecimento.
+	"videotoolbox": {"hevc": "hevc_videotoolbox", "h264": "h264_videotoolbox"},
+}
+
+// resolveHWAccelEncoder busca o encoder de hardware para o par
+// (vendor de hwaccel, codec base pedido pela regra: "hevc"/"h264"/"av1").
+// O segundo retorno (recognized) indica se o vendor é conhecido E suporta o
+// codec base pedido; quando false, o chamador deve cair para o encoder por
+// software E não emitir "-hwaccel", pois um valor de vendor não reconhecido
+// (ex.: typo "nvidia") faria o ffmpeg rejeitar a flag "-hwaccel" mesmo já
+// tendo caído para software.
+func resolveHWAccelEncoder(hw, codecBase string) (encoder string, recognized bool) {
+	vendor, ok := hwaccelEncoders[strings.ToLower(hw)]
+	if !ok {
+		return "", false
+	}
+	enc, ok := vendor[codecBase]
+	if !ok {
+		return "", false
+	}
+	return enc, true
+}
+
+// softwareFallbackCodec retorna o encoder por software padrão para um codec
+// base, usado tanto quando nenhum hwaccel foi pedido quanto quando o vendor
+// pedido não foi reconhecido/suportado (fallback silencioso).
+func softwareFallbackCodec(codecBase string, lossless bool) string {
+	switch codecBase {
+	case "hevc":
+		return "libx265"
+	case "h264":
+		return "libx264"
+	case "av1":
+		if lossless {
+			return "libaom-av1"
+		}
+		return "libsvtav1"
+	default:
+		return codecBase
+	}
+}
+
 // buildArgs monta os argumentos do ffmpeg a partir do TargetSpec.
 func buildArgs(target core.TargetSpec, isMP4 bool, audioCodecs []string) []string {
 	args := []string{"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-stats_period", "0.1"}
@@ -43,52 +160,20 @@ func buildArgs(target core.TargetSpec, isMP4 bool, audioCodecs []string) []strin
 
 		if target.VideoHWAccel != "" {
 			hw := strings.ToLower(target.VideoHWAccel)
-			if codec == "hevc" {
-				if hw == "nvenc" || hw == "cuda" {
-					codec = "hevc_nvenc"
-				} else if hw == "vaapi" {
-					codec = "hevc_vaapi"
-				} else if hw == "qsv" {
-					codec = "hevc_qsv"
-				} else if hw == "videotoolbox" {
-					codec = "hevc_videotoolbox"
-				} else {
-					codec = "libx265"
-				}
-			} else if codec == "h264" {
-				if hw == "nvenc" || hw == "cuda" {
-					codec = "h264_nvenc"
-				} else if hw == "vaapi" {
-					codec = "h264_vaapi"
-				} else if hw == "qsv" {
-					codec = "h264_qsv"
-				} else if hw == "videotoolbox" {
-					codec = "h264_videotoolbox"
-				} else {
-					codec = "libx264"
-				}
-			} else if codec == "av1" {
-				if hw == "nvenc" || hw == "cuda" {
-					codec = "av1_nvenc"
-				} else if hw == "vaapi" {
-					codec = "av1_vaapi"
-				} else if hw == "qsv" {
-					codec = "av1_qsv"
-				} else {
-					codec = "libsvtav1"
-				}
+			if enc, recognized := resolveHWAccelEncoder(hw, codec); recognized {
+				codec = enc
+			} else if codec == "hevc" || codec == "h264" || codec == "av1" {
+				// Vendor não reconhecido (ex.: typo "nvidia") ou reconhecido
+				// mas sem suporte a este codec base (ex.: videotoolbox+av1):
+				// cai silenciosamente para o encoder por software — mesmo
+				// resultado do ramo "sem hwaccel" abaixo. Transcode() usa a
+				// mesma tabela (resolveHWAccelEncoder) para saber que o
+				// hwaccel NÃO foi aplicado e evitar emitir "-hwaccel".
+				codec = softwareFallbackCodec(codec, target.VideoLossless)
 			}
-		} else {
+		} else if codec == "hevc" || codec == "av1" {
 			// Mapeia codecs genéricos para encoders recomendados em software
-			if codec == "hevc" {
-				codec = "libx265"
-			} else if codec == "av1" {
-				if target.VideoLossless {
-					codec = "libaom-av1"
-				} else {
-					codec = "libsvtav1"
-				}
-			}
+			codec = softwareFallbackCodec(codec, target.VideoLossless)
 		}
 
 		if codec == "copy" {
@@ -205,16 +290,34 @@ func buildArgs(target core.TargetSpec, isMP4 bool, audioCodecs []string) []strin
 	return args
 }
 
-// Transcode executa o ffmpeg e emite progresso (0..1) no canal retornado.
-func (t *Transcode) Transcode(input, output string, media core.MediaInfo, target core.TargetSpec) (<-chan float64, error) {
-	// Monta mapeamento completo dos fluxos para evitar perda de faixas secundárias
+// buildTranscodeArgs monta a lista completa de argumentos do ffmpeg para um
+// job de transcodificação: decisão de "-hwaccel", mapeamento de streams
+// (vídeo/áudio/legendas embutidas/legendas avulsas/anexos) e as flags de
+// codec/CRF/preset produzidas por buildArgs(). Extraído de Transcode() como
+// função pura (sem side effects de exec.Command) para permitir testar a
+// construção dos argumentos sem precisar de um binário ffmpeg real.
+func buildTranscodeArgs(input, output string, media core.MediaInfo, target core.TargetSpec) []string {
+	mp4 := isMP4(target, output)
+
 	var args []string
 	if target.VideoHWAccel != "" {
 		hw := strings.ToLower(target.VideoHWAccel)
-		if hw == "nvenc" {
-			hw = "cuda"
+		// Usa a MESMA tabela que buildArgs() usa para escolher o encoder:
+		// só emitimos "-hwaccel" quando o vendor foi de fato reconhecido e
+		// aplicado. Se buildArgs() caiu para software (vendor desconhecido,
+		// ex.: typo "nvidia", ou vendor sem suporte a este codec base), não
+		// emitimos "-hwaccel" — caso contrário o ffmpeg recebe um encoder de
+		// software junto com uma flag "-hwaccel" que ele não reconhece e
+		// rejeita o comando inteiro (bug: fallback silencioso virava falha).
+		if _, recognized := resolveHWAccelEncoder(hw, target.VideoCodec); recognized {
+			// Alias: a flag "-hwaccel" (decodificação) do ffmpeg usa "cuda",
+			// não "nvenc" (que é o nome do encoder, usado só em "-c:v").
+			hwFlag := hw
+			if hwFlag == "nvenc" {
+				hwFlag = "cuda"
+			}
+			args = append(args, "-hwaccel", hwFlag)
 		}
-		args = append(args, "-hwaccel", hw)
 	}
 	args = append(args, "-i", input)
 
@@ -222,13 +325,18 @@ func (t *Transcode) Transcode(input, output string, media core.MediaInfo, target
 		args = append(args, "-i", sub)
 	}
 
-	if media.HasVideo {
-		args = append(args, "-map", "0:v")
-	}
+	// Vídeo: mapeamento explícito por índice (não "-map 0:v" em bloco) para
+	// garantir que o vídeo real caia sempre no índice de saída 0 — alvo do
+	// "-c:v:0" em buildArgs() — mesmo que uma capa/attached_pic apareça
+	// antes dele no container de origem (bug de mis-seleção do stream).
+	args = append(args, buildVideoMapArgs(media)...)
 	if media.HasAudio {
 		args = append(args, "-map", "0:a")
 	}
-	args = append(args, "-map", "0:s?", "-map", "0:t?")
+	// Legendas embutidas: mapeadas por índice para permitir descartar, ao
+	// gerar MP4, as baseadas em imagem (PGS/VobSub/DVB) que quebrariam o job.
+	args = append(args, buildSubtitleMapArgs(media.SubtitleCodecs, mp4)...)
+	args = append(args, "-map", "0:t?")
 
 	for idx := range media.SubtitlePaths {
 		args = append(args, "-map", fmt.Sprintf("%d:s", idx+1))
@@ -237,9 +345,15 @@ func (t *Transcode) Transcode(input, output string, media core.MediaInfo, target
 	// Preserva todos os metadados globais do arquivo de entrada (seção 10.1 do guia)
 	args = append(args, "-map_metadata", "0")
 
-	isMP4 := target.Container == "mp4" || strings.HasSuffix(strings.ToLower(output), ".mp4")
-	args = append(args, buildArgs(target, isMP4, media.AudioCodecs)...)
+	args = append(args, buildArgs(target, mp4, media.AudioCodecs)...)
 	args = append(args, output)
+
+	return args
+}
+
+// Transcode executa o ffmpeg e emite progresso (0..1) no canal retornado.
+func (t *Transcode) Transcode(input, output string, media core.MediaInfo, target core.TargetSpec) (<-chan float64, error) {
+	args := buildTranscodeArgs(input, output, media, target)
 
 	cmd := exec.Command(t.bin, args...)
 	stdout, err := cmd.StdoutPipe()
