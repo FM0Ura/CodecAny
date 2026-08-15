@@ -24,7 +24,7 @@ global:
       crf: 28
       preset: 5
     audio:
-      codec: copy
+      codec: flac
     container: auto
 
 # ----------------------------------------------------------
@@ -44,7 +44,7 @@ rules:
         codec: av1
         preset: 5
       audio:
-        codec: copy          # mantém áudio original (sem perda geracional)
+        codec: flac          # converte lossless pesados para FLAC, copia formatos leves
       container: mkv
 
   # 2) Vídeo AV1 → nunca converter
@@ -65,7 +65,7 @@ rules:
         codec: av1
         preset: 5
       audio:
-        codec: copy          # mantém áudio original
+        codec: flac          # converte lossless pesados para FLAC, copia formatos leves
       container: mkv         # MKV é melhor para preservar legendas e metadados sem perdas
 
 # ----------------------------------------------------------
