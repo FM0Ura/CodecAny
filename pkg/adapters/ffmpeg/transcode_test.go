@@ -2,6 +2,7 @@ package ffmpeg
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/FM0Ura/codecany/pkg/core"
@@ -419,5 +420,134 @@ func TestBuildTranscodeArgs_RecognizedHWAccelKeepsFlag(t *testing.T) {
 	want := []string{"-hwaccel", "cuda"}
 	if len(got) < 2 || got[0] != want[0] || got[1] != want[1] {
 		t.Errorf("buildTranscodeArgs()[:2] = %v, want %v", got[:min(2, len(got))], want)
+	}
+}
+
+// TestReadProgress_EmitsFractionsWhenDurationKnown garante que, com uma
+// duração conhecida, a leitura de "-progress pipe:1" produz frações
+// intermediárias (não só o 1.0 final de progress=end).
+func TestReadProgress_EmitsFractionsWhenDurationKnown(t *testing.T) {
+	input := strings.Join([]string{
+		"frame=1",
+		"out_time_ms=1000000",
+		"progress=continue",
+		"frame=2",
+		"out_time_ms=5000000",
+		"progress=continue",
+		"frame=3",
+		"out_time_ms=9000000",
+		"progress=continue",
+		"progress=end",
+	}, "\n")
+
+	out := make(chan float64, 32)
+	readProgress(strings.NewReader(input), 10.0, out)
+	close(out)
+
+	var got []float64
+	for v := range out {
+		got = append(got, v)
+	}
+	if len(got) == 0 {
+		t.Fatal("esperava ao menos uma fração de progresso")
+	}
+	foundIntermediate := false
+	for _, v := range got[:len(got)-1] {
+		if v > 0 && v < 1 {
+			foundIntermediate = true
+		}
+	}
+	if !foundIntermediate {
+		t.Errorf("esperava frações intermediárias antes do progress=end, got %v", got)
+	}
+	if got[len(got)-1] != 1.0 {
+		t.Errorf("último valor esperado 1.0 (progress=end), got %v", got[len(got)-1])
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i] < got[i-1] {
+			t.Errorf("frações fora de ordem crescente: %v", got)
+			break
+		}
+	}
+}
+
+// TestReadProgress_NoIntermediateFractionsWhenDurationZero é a guarda de
+// regressão do bug relatado: quando durationSec é 0 (ex.: format.duration
+// ausente e nenhum fallback disponível), NENHUMA fração intermediária deve
+// chegar ao canal — só o 1.0 final de progress=end. É exatamente esse
+// comportamento que fazia a UI da CLI parecer travada, só atualizando no
+// início e no fim da conversão.
+func TestReadProgress_NoIntermediateFractionsWhenDurationZero(t *testing.T) {
+	input := strings.Join([]string{
+		"frame=1",
+		"out_time_ms=1000000",
+		"progress=continue",
+		"frame=2",
+		"out_time_ms=5000000",
+		"progress=continue",
+		"progress=end",
+	}, "\n")
+
+	out := make(chan float64, 32)
+	readProgress(strings.NewReader(input), 0, out)
+	close(out)
+
+	var got []float64
+	for v := range out {
+		got = append(got, v)
+	}
+	if len(got) != 1 || got[0] != 1.0 {
+		t.Errorf("com durationSec=0 esperava só [1.0], got %v", got)
+	}
+}
+
+// TestReadProgress_ClampsFractionRange garante que nenhuma fração fora de
+// [0,1] é emitida (ex.: out_time momentaneamente maior que a duração
+// probada, por imprecisão de duração estimada).
+func TestReadProgress_ClampsFractionRange(t *testing.T) {
+	input := strings.Join([]string{
+		"out_time_ms=20000000", // 20s > duração (10s) -> ratio 2.0, fora de [0,1]
+		"progress=continue",
+		"progress=end",
+	}, "\n")
+
+	out := make(chan float64, 32)
+	readProgress(strings.NewReader(input), 10.0, out)
+	close(out)
+
+	for v := range out {
+		if v < 0 || v > 1 {
+			t.Errorf("fração fora de [0,1]: %v", v)
+		}
+	}
+}
+
+func TestParseOutTime(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    float64
+		wantErr bool
+	}{
+		{"00:00:00.000000", 0, false},
+		{"01:02:03.456", 3723.456, false},
+		{"00:25:12.219000000", 1512.219, false}, // formato de 9 dígitos visto no arquivo real (tags DURATION)
+		{"abc", 0, true},
+		{"00:01", 0, true}, // menos de 3 partes separadas por ":"
+	}
+	for _, c := range cases {
+		got, err := parseOutTime(c.in)
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("parseOutTime(%q) esperava erro, obteve %v", c.in, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("parseOutTime(%q) erro inesperado: %v", c.in, err)
+			continue
+		}
+		if diff := got - c.want; diff > 0.001 || diff < -0.001 {
+			t.Errorf("parseOutTime(%q) = %v, want %v", c.in, got, c.want)
+		}
 	}
 }

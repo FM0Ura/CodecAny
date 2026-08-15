@@ -203,3 +203,214 @@ func TestProbe_NoAttachedPicUnaffected(t *testing.T) {
 		t.Errorf("esperava resolução 3840x2160, obteve %dx%d", mi.Width, mi.Height)
 	}
 }
+
+// TestProbe_DurationUsesFormatDurationWhenPresent é o teste de regressão do
+// caminho feliz: quando format.duration vem preenchido, ele prevalece mesmo
+// que streams[].duration/tags divirjam — o fallback não deve sobrepor a
+// fonte mais confiável.
+func TestProbe_DurationUsesFormatDurationWhenPresent(t *testing.T) {
+	fakeJSON := `{
+		"format": {"format_name": "matroska,webm", "duration": "120.5"},
+		"streams": [
+			{
+				"codec_type": "video",
+				"codec_name": "h264",
+				"width": 1920,
+				"height": 1080,
+				"duration": "999.0",
+				"disposition": {"attached_pic": 0}
+			}
+		]
+	}`
+	bin := writeFakeFFprobe(t, fakeJSON)
+
+	mi, err := NewProber().WithBin(bin).Probe(filepath.Join(t.TempDir(), "movie.mkv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mi.DurationSec != 120.5 {
+		t.Errorf("esperava DurationSec=120.5 (format.duration), obteve %v", mi.DurationSec)
+	}
+}
+
+// TestProbe_DurationFallsBackToVideoStreamDuration cobre o bug relatado:
+// format.duration ausente/"N/A" (comum em MKV remuxado) deve cair para a
+// duração numérica do stream de vídeo real.
+func TestProbe_DurationFallsBackToVideoStreamDuration(t *testing.T) {
+	fakeJSON := `{
+		"format": {"format_name": "matroska,webm", "duration": "N/A"},
+		"streams": [
+			{
+				"codec_type": "video",
+				"codec_name": "h264",
+				"width": 1920,
+				"height": 1080,
+				"duration": "125.033000",
+				"disposition": {"attached_pic": 0}
+			}
+		]
+	}`
+	bin := writeFakeFFprobe(t, fakeJSON)
+
+	mi, err := NewProber().WithBin(bin).Probe(filepath.Join(t.TempDir(), "movie.mkv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mi.DurationSec != 125.033 {
+		t.Errorf("esperava DurationSec=125.033 (fallback streams[].duration), obteve %v", mi.DurationSec)
+	}
+}
+
+// TestProbe_DurationFallbackIgnoresAttachedPicStream garante que o fallback
+// usa a duração do stream de vídeo REAL (mesmo índice de VideoStreamIndex),
+// não a de uma capa/attached_pic que apareça antes dele no container.
+func TestProbe_DurationFallbackIgnoresAttachedPicStream(t *testing.T) {
+	fakeJSON := `{
+		"format": {"format_name": "matroska,webm", "duration": "N/A"},
+		"streams": [
+			{
+				"codec_type": "video",
+				"codec_name": "mjpeg",
+				"width": 600,
+				"height": 800,
+				"duration": "0.04",
+				"disposition": {"attached_pic": 1}
+			},
+			{
+				"codec_type": "video",
+				"codec_name": "h264",
+				"width": 1920,
+				"height": 1080,
+				"duration": "200.0",
+				"disposition": {"attached_pic": 0}
+			}
+		]
+	}`
+	bin := writeFakeFFprobe(t, fakeJSON)
+
+	mi, err := NewProber().WithBin(bin).Probe(filepath.Join(t.TempDir(), "movie.mkv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mi.DurationSec != 200.0 {
+		t.Errorf("esperava DurationSec=200.0 (do vídeo real, ignorando a capa), obteve %v", mi.DurationSec)
+	}
+}
+
+// TestProbe_DurationFallsBackToStreamTags cobre o caso descoberto no arquivo
+// real de amostra do ambiente (mkvmerge): nem format.duration nem
+// streams[].duration numérico vêm preenchidos, só a tag Matroska
+// DURATION-eng no formato "HH:MM:SS.nnnnnnnnn".
+func TestProbe_DurationFallsBackToStreamTags(t *testing.T) {
+	fakeJSON := `{
+		"format": {"format_name": "matroska,webm", "duration": "N/A"},
+		"streams": [
+			{
+				"codec_type": "video",
+				"codec_name": "h264",
+				"width": 1920,
+				"height": 1080,
+				"disposition": {"attached_pic": 0},
+				"tags": {"DURATION-eng": "00:25:12.219000000"}
+			}
+		]
+	}`
+	bin := writeFakeFFprobe(t, fakeJSON)
+
+	mi, err := NewProber().WithBin(bin).Probe(filepath.Join(t.TempDir(), "movie.mkv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = 1512.219
+	if diff := mi.DurationSec - want; diff > 0.001 || diff < -0.001 {
+		t.Errorf("esperava DurationSec≈%v (fallback tags DURATION-eng), obteve %v", want, mi.DurationSec)
+	}
+}
+
+// TestProbe_DurationFallsBackToSizeBitrate cobre o último nível de fallback:
+// nenhuma das fontes por stream disponível, só format.size/format.bit_rate.
+func TestProbe_DurationFallsBackToSizeBitrate(t *testing.T) {
+	fakeJSON := `{
+		"format": {"format_name": "matroska,webm", "duration": "N/A", "size": "125000000", "bit_rate": "1000000"},
+		"streams": [
+			{
+				"codec_type": "video",
+				"codec_name": "h264",
+				"width": 1920,
+				"height": 1080,
+				"disposition": {"attached_pic": 0}
+			}
+		]
+	}`
+	bin := writeFakeFFprobe(t, fakeJSON)
+
+	mi, err := NewProber().WithBin(bin).Probe(filepath.Join(t.TempDir(), "movie.mkv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = 1000.0 // 125_000_000*8 / 1_000_000
+	if mi.DurationSec != want {
+		t.Errorf("esperava DurationSec=%v (fallback size/bit_rate), obteve %v", want, mi.DurationSec)
+	}
+}
+
+// TestProbe_DurationZeroWhenAllSourcesMissing documenta o degrade seguro:
+// sem nenhuma fonte disponível, DurationSec fica 0 (não é regressão).
+func TestProbe_DurationZeroWhenAllSourcesMissing(t *testing.T) {
+	fakeJSON := `{
+		"format": {"format_name": "matroska,webm", "duration": "N/A"},
+		"streams": [
+			{
+				"codec_type": "video",
+				"codec_name": "h264",
+				"width": 1920,
+				"height": 1080,
+				"disposition": {"attached_pic": 0}
+			}
+		]
+	}`
+	bin := writeFakeFFprobe(t, fakeJSON)
+
+	mi, err := NewProber().WithBin(bin).Probe(filepath.Join(t.TempDir(), "movie.mkv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mi.DurationSec != 0 {
+		t.Errorf("esperava DurationSec=0 (nenhuma fonte disponível), obteve %v", mi.DurationSec)
+	}
+}
+
+func TestParseDuration(t *testing.T) {
+	cases := []struct {
+		in   string
+		want float64
+	}{
+		{"", 0},
+		{"N/A", 0},
+		{"0", 0},
+		{"120.5", 120.5},
+		{"1512.219000", 1512.219},
+	}
+	for _, c := range cases {
+		if got := parseDuration(c.in); got != c.want {
+			t.Errorf("parseDuration(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
+func TestEstimateDurationFromSizeBitrate(t *testing.T) {
+	cases := []struct {
+		size, bitRate string
+		want          float64
+	}{
+		{"", "1000000", 0},
+		{"125000000", "", 0},
+		{"N/A", "1000000", 0},
+		{"125000000", "1000000", 1000},
+	}
+	for _, c := range cases {
+		if got := estimateDurationFromSizeBitrate(c.size, c.bitRate); got != c.want {
+			t.Errorf("estimateDurationFromSizeBitrate(%q, %q) = %v, want %v", c.size, c.bitRate, got, c.want)
+		}
+	}
+}

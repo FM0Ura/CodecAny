@@ -3,6 +3,7 @@ package ffmpeg
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -367,32 +368,47 @@ func (t *Transcode) Transcode(input, output string, media core.MediaInfo, target
 	prog := make(chan float64, 128)
 	go func() {
 		defer close(prog)
-		sc := bufio.NewScanner(stdout)
-		outTime := 0.0
-		for sc.Scan() {
-			line := strings.TrimSpace(sc.Text())
-			if strings.HasPrefix(line, "out_time_ms=") {
-				v, err := strconv.ParseFloat(strings.TrimPrefix(line, "out_time_ms="), 64)
-				if err == nil {
-					outTime = v / 1e6
-				}
-			} else if strings.HasPrefix(line, "out_time=") {
-				if d, err := parseOutTime(strings.TrimPrefix(line, "out_time=")); err == nil {
-					outTime = d
-				}
-			} else if line == "progress=end" {
-				prog <- 1.0
-			}
-			if media.DurationSec > 0 {
-				if r := outTime / media.DurationSec; r >= 0 && r <= 1 {
-					prog <- r
-				}
-			}
-		}
+		readProgress(stdout, media.DurationSec, prog)
 		cmd.Wait()
 	}()
 
 	return prog, nil
+}
+
+// readProgress lê as linhas de "-progress pipe:1" de r e emite frações de
+// progresso (0..1) em out, usando durationSec como referência. Extraída de
+// Transcode() como função pura (recebe um io.Reader genérico em vez de
+// depender de cmd.StdoutPipe()) para ser testável sem precisar de um
+// processo ffmpeg real.
+func readProgress(r io.Reader, durationSec float64, out chan<- float64) {
+	sc := bufio.NewScanner(r)
+	outTime := 0.0
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if strings.HasPrefix(line, "out_time_ms=") {
+			v, err := strconv.ParseFloat(strings.TrimPrefix(line, "out_time_ms="), 64)
+			if err == nil {
+				outTime = v / 1e6
+			}
+		} else if strings.HasPrefix(line, "out_time=") {
+			if d, err := parseOutTime(strings.TrimPrefix(line, "out_time=")); err == nil {
+				outTime = d
+			}
+		} else if line == "progress=end" {
+			out <- 1.0
+			// Não cai no bloco de reenvio abaixo: sem o "continue", a
+			// fração calculada a partir do outTime (possivelmente
+			// desatualizado nesta última linha) seria reenviada logo depois
+			// do 1.0 já emitido, fazendo a barra "voltar" momentaneamente
+			// (ex.: 100% seguido de 90%) bem no fim da conversão.
+			continue
+		}
+		if durationSec > 0 {
+			if r := outTime / durationSec; r >= 0 && r <= 1 {
+				out <- r
+			}
+		}
+	}
 }
 
 // parseOutTime interpreta timcodes HH:MM:SS.microseconds.
