@@ -298,6 +298,66 @@ rules:
 	}
 }
 
+// TestMergeSpecAutoApproveRuleOverridesGlobal cobre a resolução de
+// TargetSpec.AutoApprove: override por regra vence o default global; quando
+// nem regra nem default especificam nada, o resultado é false (exige
+// aprovação manual — comportamento novo a partir da v1.2).
+func TestMergeSpecAutoApproveRuleOverridesGlobal(t *testing.T) {
+	content := `
+version: 1
+global:
+  staging_dir: /tmp/xs
+  defaults:
+    video: { codec: hevc }
+    auto_approve: true
+rules:
+  - name: regra_sem_override
+    match:
+      container: mkv
+    convert:
+      video: { codec: hevc }
+  - name: regra_com_override
+    match:
+      container: mp4
+    convert:
+      video: { codec: hevc }
+    auto_approve: false
+`
+	r := mustEngine(t, content)
+
+	// Sem override na regra: herda o default global (true).
+	_, spec1, err := r.Evaluate(MediaInfo{Container: "mkv", VideoCodec: "h264"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !spec1.AutoApprove {
+		t.Errorf("esperava AutoApprove=true herdado do default global, obteve false")
+	}
+
+	// Com override explícito na regra: vence o default global.
+	_, spec2, err := r.Evaluate(MediaInfo{Container: "mp4", VideoCodec: "h264"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec2.AutoApprove {
+		t.Errorf("esperava AutoApprove=false (override da regra), obteve true (default global vazou)")
+	}
+}
+
+// TestMergeSpecAutoApproveDefaultsFalse cobre o caso central da v1.2: sem
+// auto_approve configurado em lugar nenhum (nem regra, nem default global), o
+// resultado deve ser false — exige aprovação manual por padrão.
+func TestMergeSpecAutoApproveDefaultsFalse(t *testing.T) {
+	r := mustEngine(t, baseRules) // baseRules não define auto_approve em lugar nenhum
+	_, spec, err := r.Evaluate(MediaInfo{Container: "mkv", VideoCodec: "h264", AudioCodecs: []string{"aac"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.AutoApprove {
+		t.Errorf("esperava AutoApprove=false por padrão (nada configurado), obteve true")
+	}
+}
+
 func TestRulesHWAccel(t *testing.T) {
 	content := `
 version: 1

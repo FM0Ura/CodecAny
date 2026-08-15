@@ -27,6 +27,23 @@ global:
       codec: flac
     container: auto
 
+    # auto_approve (v1.2): controla se o Job pode substituir o arquivo
+    # original automaticamente assim que a verificação de integridade passar,
+    # ou se deve pausar em AWAITING_APPROVAL aguardando aprovação manual
+    # (prompt y/N no terminal, ou `-approve <id>`/`-approve-all` depois via
+    # `-list-staged`). Sem esta chave definida (nem aqui nem em `auto_approve`
+    # dentro de uma regra específica), o default é `false` — toda conversão
+    # exige aprovação manual antes de trocar o arquivo original.
+    #
+    # Para restaurar o comportamento anterior à v1.2 (substituição automática,
+    # sem pausa), descomente a linha abaixo:
+    # auto_approve: true
+
+# Cada regra também pode sobrepor este default individualmente com
+# `auto_approve: true|false` no mesmo nível de `match`/`convert` (fora de
+# `convert:`), por exemplo para exigir aprovação só em conversões arriscadas
+# (ex.: lossy agressivo) e liberar auto_approve para as demais.
+
 # ----------------------------------------------------------
 # Regras (ordem importa: específica primeiro)
 # ----------------------------------------------------------

@@ -14,6 +14,12 @@ const (
 	StatusCompleted  JobStatus = "COMPLETED"
 	StatusFailed     JobStatus = "FAILED"
 	StatusRolledBack JobStatus = "ROLLED_BACK"
+
+	// StatusAwaitingApproval marca um Job cuja conversão terminou (integridade
+	// OK, economia de espaço suficiente) mas que ainda não foi substituído no
+	// lugar do original porque a regra/default não habilita auto_approve. O
+	// output convertido permanece em staging até ApproveJob/RejectJob decidir.
+	StatusAwaitingApproval JobStatus = "AWAITING_APPROVAL"
 )
 
 // MediaInfo carrega os metadados técnicos extraídos pelo MediaProber (RF02).
@@ -65,6 +71,13 @@ type TargetSpec struct {
 	AudioCodec    string `json:"audio_codec,omitempty" yaml:"audio_codec,omitempty"`
 	AudioBitrate  string `json:"audio_bitrate,omitempty" yaml:"audio_bitrate,omitempty"`
 	Container     string `json:"container,omitempty" yaml:"container,omitempty"`
+
+	// AutoApprove indica se o Job pode ser commitado automaticamente ao final
+	// da verificação de integridade (comportamento histórico, pré-v1.2) ou se
+	// deve pausar em StatusAwaitingApproval até aprovação manual (default a
+	// partir da v1.2 — ver mergeSpec em rules.go). Persistido na coluna JSON
+	// `target` já existente, sem precisar de migração de schema.
+	AutoApprove bool `json:"auto_approve,omitempty" yaml:"auto_approve,omitempty"`
 }
 
 // SizeMetrics carrega as métricas de eficiência de espaço (seção 7).

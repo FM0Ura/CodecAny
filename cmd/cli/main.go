@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -31,7 +33,29 @@ func main() {
 	scanInterval := flag.String("scan-interval", "1m", "intervalo da varredura periódica de fallback (ex.: 30s, 5m; 0 desliga)")
 	flag.Var(&dirs, "dir", "diretório a monitorar (repita para vários)")
 	flag.Var(&files, "file", "arquivo específico a processar uma vez (repita para vários)")
+
+	// Comandos administrativos de staging/aprovação (Fase 1 do v1.2): não
+	// sobem worker/watcher, só consultam/alteram o Store existente. Ver
+	// runManagementCommand.
+	listStaged := flag.Bool("list-staged", false, "lista jobs aguardando aprovação manual e sai")
+	approveID := flag.String("approve", "", "aprova o job com o ID informado e sai")
+	approveAll := flag.Bool("approve-all", false, "aprova todos os jobs aguardando aprovação e sai")
+	rejectID := flag.String("reject", "", "rejeita o job com o ID informado e sai")
+	rejectAll := flag.Bool("reject-all", false, "rejeita todos os jobs aguardando aprovação e sai")
 	flag.Parse()
+
+	if *listStaged || *approveID != "" || *approveAll || *rejectID != "" || *rejectAll {
+		os.Exit(runManagementCommand(managementArgs{
+			storePath:  *store,
+			rulesPath:  *rules,
+			listStaged: *listStaged,
+			approveID:  *approveID,
+			approveAll: *approveAll,
+			rejectID:   *rejectID,
+			rejectAll:  *rejectAll,
+		}, os.Stdout))
+	}
+
 	if len(dirs) == 0 && len(files) == 0 {
 		flag.Usage()
 		os.Exit(2)
@@ -48,7 +72,6 @@ func main() {
 	}
 
 	events := make(chan core.JobEvent, 256)
-	go frameProgress(events, log)
 
 	scanEvery, err := time.ParseDuration(*scanInterval)
 	if err != nil {
@@ -61,9 +84,19 @@ func main() {
 	}
 	eng.SetScanInterval(scanEvery)
 
+	// approvalsWG conta os prompts interativos de aprovação em andamento
+	// (disparados por frameProgress em goroutines dedicadas). Sem esperar por
+	// eles, eng.Shutdown() poderia fechar o Store antes do usuário responder
+	// ao prompt y/N — ver waitApprovals.
+	var approvalsWG sync.WaitGroup
+	go frameProgress(events, log, eng, &approvalsWG)
+
 	if len(files) > 0 {
 		runErr := eng.RunOnce(context.Background(), files)
 		printSavingsReport(eng, log)
+		// Modo -file: sem timeout. É o cenário síncrono central da Fase 1 —
+		// esperar a decisão do usuário é o comportamento correto aqui.
+		waitApprovals(&approvalsWG, 0, log)
 		eng.Shutdown()
 		if runErr != nil {
 			logger.Fatal(log, runErr)
@@ -88,6 +121,9 @@ func main() {
 	eng.StartWatch()
 	eng.OpenWorkers(workCtx(sig))
 	printSavingsReport(eng, log)
+	// Modo daemon/watch: timeout curto (mesmo padrão de Engine.waitWebhooks)
+	// para não travar o encerramento por um terminal de prompt abandonado.
+	waitApprovals(&approvalsWG, 5*time.Second, log)
 	eng.Shutdown()
 }
 
@@ -124,18 +160,20 @@ func buildEngine(storePath, rulesPath string, workers int, events chan core.JobE
 
 // frameProgress consome eventos nativos e exibe o progresso da conversão.
 // Em terminal, desenha uma barra de progresso inline; caso contrário, registra
-// via slog de forma esparsa (a cada 1%).
-func frameProgress(events chan core.JobEvent, log *slog.Logger) {
+// via slog de forma esparsa (a cada 1%). eng e approvalsWG só são usados para
+// o prompt interativo de aprovação (EventJobAwaitingApproval) — ver
+// handleAwaitingApproval.
+func frameProgress(events chan core.JobEvent, log *slog.Logger, eng *core.Engine, approvalsWG *sync.WaitGroup) {
 	render := isTerminal(os.Stderr)
 	bar := newProgressBar(os.Stderr)
 	var lastPct = map[string]int{}
 	for ev := range events {
 		switch ev.Kind {
 		case core.EventJobStart:
-			if render {
-				bar.endl(ev.FilePath)
-			}
-			log.Info("job iniciado", "job_id", ev.JobID, "path", ev.FilePath, "driver", ev.Driver)
+			// Nada a fazer aqui: a barra nasce no primeiro EventJobProgress
+			// (chamar bar.endl aqui limparia uma barra que ainda não existe,
+			// imprimindo uma linha em branco espúria); o log "job iniciado"
+			// já é responsabilidade única de engine.go, evitando duplicação.
 		case core.EventJobProgress:
 			pct := ev.Progress * 100
 			if render {
@@ -152,7 +190,220 @@ func frameProgress(events chan core.JobEvent, log *slog.Logger) {
 			if render {
 				bar.endl(ev.FilePath) // finaliza a linha da barra
 			}
+		case core.EventJobAwaitingApproval:
+			if render {
+				bar.endl(ev.FilePath)
+			}
+			// Prompt síncrono roda em goroutine dedicada para não bloquear o
+			// consumo dos demais eventos (outros jobs continuam progredindo
+			// concorrentemente); approvalsWG permite que main() espere essas
+			// goroutines terminarem antes de encerrar o Store (ver waitApprovals).
+			approvalsWG.Add(1)
+			go func(ev core.JobEvent) {
+				defer approvalsWG.Done()
+				handleAwaitingApproval(eng, ev, log)
+			}(ev)
 		}
+	}
+}
+
+// approvalPromptMu serializa os prompts interativos de aprovação: evita que a
+// saída de dois jobs concorrentes se misture no terminal quando mais de um
+// job chega a AWAITING_APPROVAL ao mesmo tempo (ex.: -workers > 1).
+var approvalPromptMu sync.Mutex
+
+// handleAwaitingApproval reage a EventJobAwaitingApproval. Em terminal TTY
+// (stdin e stdout interativos), imprime o resumo do job e lê a decisão y/N
+// do usuário, chamando ApproveJob/RejectJob de forma síncrona. Fora de TTY
+// (daemon/saída redirecionada), não há para quem perguntar — só loga a
+// sugestão dos comandos -approve/-reject para uso posterior via -list-staged.
+func handleAwaitingApproval(eng *core.Engine, ev core.JobEvent, log *slog.Logger) {
+	if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
+		log.Info("job aguardando aprovação manual", "job_id", ev.JobID, "path", ev.FilePath,
+			"approve_cmd", "-approve "+ev.JobID, "reject_cmd", "-reject "+ev.JobID)
+		return
+	}
+	approvalPromptMu.Lock()
+	defer approvalPromptMu.Unlock()
+	printApprovalSummary(ev, os.Stdout)
+	if promptApproval(os.Stdin) {
+		if err := eng.ApproveJob(ev.JobID); err != nil {
+			log.Error("falha ao aprovar job", "job_id", ev.JobID, "error", err.Error())
+		}
+		return
+	}
+	if err := eng.RejectJob(ev.JobID); err != nil {
+		log.Error("falha ao rejeitar job", "job_id", ev.JobID, "error", err.Error())
+	}
+}
+
+// printApprovalSummary imprime o resumo do job em staging (tamanhos, economia
+// de espaço, codec alvo) que antecede o prompt y/N, no formato descrito em
+// docs/propostas_v1.2.md.
+func printApprovalSummary(ev core.JobEvent, w io.Writer) {
+	m := ev.Metrics
+	fmt.Fprintf(w, "\n[%s] Staging Concluído: %q\n", shortID(ev.JobID), filepath.Base(ev.FilePath))
+	fmt.Fprintf(w, "  Tamanho Original:    %s\n", humanBytes(m.OriginalSizeBytes))
+	fmt.Fprintf(w, "  Tamanho Convertido:  %s\n", humanBytes(m.ConvertedSizeBytes))
+	fmt.Fprintf(w, "  Espaço Economizado:  %s (%.2f%%)\n", humanBytes(m.SavedBytes), m.CompressionRatioPct)
+	fmt.Fprintf(w, "  Codec Alvo:          %s\n", strings.ToUpper(ev.TargetCodec))
+	fmt.Fprint(w, "  Deseja substituir o arquivo original? [y/N]: ")
+}
+
+// promptApproval lê uma linha de r e retorna true só para "y"/"yes"
+// (case-insensitive) — qualquer outra resposta (incluindo vazia/EOF) é um
+// "não" seguro, preservando o arquivo original.
+func promptApproval(r io.Reader) bool {
+	line, _ := bufio.NewReader(r).ReadString('\n')
+	line = strings.ToLower(strings.TrimSpace(line))
+	return line == "y" || line == "yes"
+}
+
+// waitApprovals aguarda os prompts interativos de aprovação em andamento
+// (approvalsWG) terminarem antes do chamador prosseguir para eng.Shutdown().
+// timeout<=0 espera indefinidamente (modo -file: aguardar a decisão do
+// usuário é o comportamento central da Fase 1); timeout>0 desiste após esse
+// prazo e loga um aviso (modo daemon/watch — mesmo padrão de Engine.waitWebhooks).
+func waitApprovals(wg *sync.WaitGroup, timeout time.Duration, log *slog.Logger) {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	if timeout <= 0 {
+		<-done
+		return
+	}
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		log.Warn("timeout aguardando aprovações pendentes durante shutdown")
+	}
+}
+
+// humanBytes formata bytes em unidade adaptativa (B/KB/MB/GB), reaproveitado
+// por -list-staged (e, na Fase 6, por -history).
+func humanBytes(n int64) string {
+	const unit = 1024.0
+	f := float64(n)
+	switch {
+	case f >= unit*unit*unit:
+		return fmt.Sprintf("%.2f GB", f/(unit*unit*unit))
+	case f >= unit*unit:
+		return fmt.Sprintf("%.2f MB", f/(unit*unit))
+	case f >= unit:
+		return fmt.Sprintf("%.2f KB", f/unit)
+	default:
+		return fmt.Sprintf("%d B", n)
+	}
+}
+
+// managementArgs agrupa os parâmetros dos comandos administrativos de
+// staging/aprovação (-list-staged/-approve/-approve-all/-reject/-reject-all).
+type managementArgs struct {
+	storePath  string
+	rulesPath  string
+	listStaged bool
+	approveID  string
+	approveAll bool
+	rejectID   string
+	rejectAll  bool
+}
+
+// runManagementCommand executa um subcomando administrativo e retorna o exit
+// code do processo. Abre Store+RulesEngine via buildEngine (events=nil,
+// Logger=nil → default interno de NewEngine) e NUNCA chama
+// WatchDir/StartWatch/OpenWorkers — nenhuma goroutine de worker/watcher sobe,
+// já que o objetivo é só consultar/alterar o Store existente e sair.
+func runManagementCommand(a managementArgs, out io.Writer) int {
+	eng, err := buildEngine(a.storePath, a.rulesPath, 1, nil, nil)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "erro:", err)
+		return 1
+	}
+	defer eng.Shutdown()
+
+	switch {
+	case a.listStaged:
+		return cmdListStaged(eng, out)
+	case a.approveID != "":
+		return cmdApprove(eng, a.approveID, out)
+	case a.approveAll:
+		return cmdApproveAll(eng, out)
+	case a.rejectID != "":
+		return cmdReject(eng, a.rejectID, out)
+	case a.rejectAll:
+		return cmdRejectAll(eng, out)
+	}
+	return 0
+}
+
+func cmdListStaged(eng *core.Engine, out io.Writer) int {
+	jobs, err := eng.ListStaged()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "erro ao listar jobs pendentes:", err)
+		return 1
+	}
+	if len(jobs) == 0 {
+		fmt.Fprintln(out, "nenhum job aguardando aprovação")
+		return 0
+	}
+	formatStagedTable(jobs, out)
+	return 0
+}
+
+func cmdApprove(eng *core.Engine, id string, out io.Writer) int {
+	if err := eng.ApproveJob(id); err != nil {
+		fmt.Fprintln(os.Stderr, "erro ao aprovar job:", err)
+		return 1
+	}
+	fmt.Fprintf(out, "job %s aprovado e finalizado\n", shortID(id))
+	return 0
+}
+
+func cmdReject(eng *core.Engine, id string, out io.Writer) int {
+	if err := eng.RejectJob(id); err != nil {
+		fmt.Fprintln(os.Stderr, "erro ao rejeitar job:", err)
+		return 1
+	}
+	fmt.Fprintf(out, "job %s rejeitado (original preservado)\n", shortID(id))
+	return 0
+}
+
+func cmdApproveAll(eng *core.Engine, out io.Writer) int {
+	n, errs := eng.ApproveAll()
+	fmt.Fprintf(out, "%d job(s) aprovado(s)\n", n)
+	for _, e := range errs {
+		fmt.Fprintln(os.Stderr, "erro:", e)
+	}
+	if len(errs) > 0 {
+		return 1
+	}
+	return 0
+}
+
+func cmdRejectAll(eng *core.Engine, out io.Writer) int {
+	n, errs := eng.RejectAll()
+	fmt.Fprintf(out, "%d job(s) rejeitado(s)\n", n)
+	for _, e := range errs {
+		fmt.Fprintln(os.Stderr, "erro:", e)
+	}
+	if len(errs) > 0 {
+		return 1
+	}
+	return 0
+}
+
+// formatStagedTable imprime a tabela de jobs aguardando aprovação no formato
+// descrito em docs/propostas_v1.2.md (ID/Arquivo/Original/Convertido/Economia
+// + sugestão do comando -approve pronto para copiar/colar).
+func formatStagedTable(jobs []*core.Job, w io.Writer) {
+	fmt.Fprintf(w, "%-10s %-30s %-10s %-12s %s\n", "ID", "Arquivo", "Original", "Convertido", "Economia")
+	for _, j := range jobs {
+		m := j.SizeMetrics
+		economia := fmt.Sprintf("%.2f%% (Aprovar: ./codecany -approve %s)", m.CompressionRatioPct, j.ID)
+		fmt.Fprintf(w, "%-10s %-30s %-10s %-12s %s\n",
+			shortID(j.ID), filepath.Base(j.Path), humanBytes(m.OriginalSizeBytes), humanBytes(m.ConvertedSizeBytes), economia)
 	}
 }
 

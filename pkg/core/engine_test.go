@@ -25,7 +25,7 @@ func setupEngineWithVerifier(t *testing.T, origSize, outSize int64, verifier Med
 	writeFileSize(t, mediaPath, origSize)
 
 	// regras com staging local e driver mock
-	rulesPath := writeRules(t, "version: 1\nglobal:\n  default_driver: mock\n  staging_dir: "+stage+"\n  space_saving:\n    min_saving_pct: 15\n  defaults:\n    video: { codec: hevc }\nrules:\n  - name: r\n    convert:\n      video: { codec: hevc }\n")
+	rulesPath := writeRules(t, "version: 1\nglobal:\n  default_driver: mock\n  staging_dir: "+stage+"\n  space_saving:\n    min_saving_pct: 15\n  defaults:\n    video: { codec: hevc }\n    auto_approve: true\nrules:\n  - name: r\n    convert:\n      video: { codec: hevc }\n")
 
 	store, err := NewStore(filepath.Join(base, "codecany.db"))
 	if err != nil {
@@ -268,6 +268,251 @@ func TestEngineCompletesWithPassingVerification(t *testing.T) {
 	}
 }
 
+// setupEngineAwaitingApproval monta um engine com auto_approve=false (default
+// da suíte, já que setupEngine/setupEngineWithVerifier passam a exigir
+// auto_approve: true explicitamente nas rules) e devolve store/staging/rules
+// separados para permitir a reconstrução de uma segunda instância de Engine
+// sobre o mesmo .db/staging (ver TestEngineApproveJobFromFreshEngineInstance).
+func setupEngineAwaitingApproval(t *testing.T, base string, origSize, outSize int64) (eng *Engine, events chan JobEvent, mediaPath, stage, dbPath, rulesPath string) {
+	t.Helper()
+	stage = filepath.Join(base, "staging")
+	mediaPath = filepath.Join(base, "movie.mkv")
+	writeFileSize(t, mediaPath, origSize)
+
+	rulesPath = writeRules(t, "version: 1\nglobal:\n  default_driver: mock\n  staging_dir: "+stage+"\n  space_saving:\n    min_saving_pct: 15\n  defaults:\n    video: { codec: hevc }\nrules:\n  - name: r\n    convert:\n      video: { codec: hevc }\n")
+
+	dbPath = filepath.Join(base, "codecany.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	re, err := NewRulesEngine(rulesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events = make(chan JobEvent, 64)
+	eng, err = NewEngine(EngineDeps{
+		Store:   store,
+		Rules:   re,
+		Prober:  mockProber{info: MediaInfo{Container: "mkv", VideoCodec: "h264"}},
+		Engines: []TranscoderEngine{&mockTranscoder{outputSize: outSize}},
+		Workers: 1,
+		Events:  events,
+		Logger:  slog.New(slog.NewTextHandler(os.Stderr, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return eng, events, mediaPath, stage, dbPath, rulesPath
+}
+
+// runToCompletion enfileira mediaPath e drena o engine até a fila esvaziar,
+// devolvendo os eventos emitidos.
+func runToCompletion(t *testing.T, eng *Engine, events chan JobEvent, mediaPath string) []JobEvent {
+	t.Helper()
+	eng.HandleDiscovered(mediaPath)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() {
+			time.Sleep(2 * time.Second)
+			cancel()
+		}()
+		eng.OpenWorkers(ctx)
+	}()
+	evs := drainEvents(events, 3*time.Second)
+	<-done
+	return evs
+}
+
+// TestEngineAwaitsApprovalWhenAutoApproveFalse cobre o caminho central da
+// Fase 1: sem auto_approve, um job com integridade OK e economia suficiente
+// pausa em AWAITING_APPROVAL em vez de commitar — evento emitido com métricas,
+// original intocado, output presente em staging.
+func TestEngineAwaitsApprovalWhenAutoApproveFalse(t *testing.T) {
+	base := t.TempDir()
+	eng, events, mediaPath, stage, _, _ := setupEngineAwaitingApproval(t, base, 1000, 500)
+	evs := runToCompletion(t, eng, events, mediaPath)
+
+	var awaiting *JobEvent
+	for i, ev := range evs {
+		if ev.Kind == EventJobAwaitingApproval {
+			awaiting = &evs[i]
+		}
+	}
+	if awaiting == nil {
+		t.Fatalf("esperava EventJobAwaitingApproval; recebidos: %+v", evs)
+	}
+	if awaiting.Metrics.SavedBytes != 500 || awaiting.Metrics.OriginalSizeBytes != 1000 {
+		t.Errorf("métricas do evento incorretas: %+v", awaiting.Metrics)
+	}
+	if awaiting.TargetCodec != "hevc" {
+		t.Errorf("TargetCodec esperado hevc, obteve %q", awaiting.TargetCodec)
+	}
+
+	// original intocado
+	fi, err := os.Stat(mediaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Size() != 1000 {
+		t.Errorf("original deveria permanecer 1000, obteve %d", fi.Size())
+	}
+	// output em staging (não purgado)
+	if _, err := os.Stat(filepath.Join(stage, "movie", "output.mkv")); err != nil {
+		t.Errorf("esperava output em staging preservado: %v", err)
+	}
+
+	job, err := eng.store.FindByPath(mediaPath)
+	if err != nil || job == nil {
+		t.Fatalf("esperava job persistido: %v", err)
+	}
+	if job.Status != StatusAwaitingApproval {
+		t.Errorf("status persistido = %v, esperado %v", job.Status, StatusAwaitingApproval)
+	}
+	if job.SizeMetrics.SavedBytes != 500 {
+		t.Errorf("métricas persistidas incorretas: %+v", job.SizeMetrics)
+	}
+}
+
+// TestEngineApproveJobCommits confirma que ApproveJob comita o output em
+// staging no lugar do original e marca COMPLETED.
+func TestEngineApproveJobCommits(t *testing.T) {
+	base := t.TempDir()
+	eng, events, mediaPath, stage, _, _ := setupEngineAwaitingApproval(t, base, 1000, 500)
+	runToCompletion(t, eng, events, mediaPath)
+
+	job, err := eng.store.FindByPath(mediaPath)
+	if err != nil || job == nil {
+		t.Fatalf("esperava job AWAITING_APPROVAL: %v", err)
+	}
+
+	if err := eng.ApproveJob(job.ID); err != nil {
+		t.Fatalf("ApproveJob falhou: %v", err)
+	}
+
+	fi, err := os.Stat(mediaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Size() != 500 {
+		t.Errorf("esperava arquivo trocado (500 bytes), obteve %d", fi.Size())
+	}
+	if _, err := os.Stat(filepath.Join(stage, "movie")); err == nil {
+		t.Errorf("staging deveria ser purgada após approve")
+	}
+
+	got, err := eng.store.FindByID(job.ID)
+	if err != nil || got == nil {
+		t.Fatalf("job deveria continuar no store: %v", err)
+	}
+	if got.Status != StatusCompleted {
+		t.Errorf("status esperado COMPLETED, obteve %v", got.Status)
+	}
+}
+
+// TestEngineRejectJobAborts confirma que RejectJob descarta o staging e
+// preserva o original, marcando ROLLED_BACK.
+func TestEngineRejectJobAborts(t *testing.T) {
+	base := t.TempDir()
+	eng, events, mediaPath, stage, _, _ := setupEngineAwaitingApproval(t, base, 1000, 500)
+	runToCompletion(t, eng, events, mediaPath)
+
+	job, err := eng.store.FindByPath(mediaPath)
+	if err != nil || job == nil {
+		t.Fatalf("esperava job AWAITING_APPROVAL: %v", err)
+	}
+
+	if err := eng.RejectJob(job.ID); err != nil {
+		t.Fatalf("RejectJob falhou: %v", err)
+	}
+
+	fi, err := os.Stat(mediaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Size() != 1000 {
+		t.Errorf("esperava original preservado (1000 bytes), obteve %d", fi.Size())
+	}
+	if _, err := os.Stat(filepath.Join(stage, "movie")); err == nil {
+		t.Errorf("staging deveria ser purgada após reject")
+	}
+
+	got, err := eng.store.FindByID(job.ID)
+	if err != nil || got == nil {
+		t.Fatalf("job deveria continuar no store: %v", err)
+	}
+	if got.Status != StatusRolledBack {
+		t.Errorf("status esperado ROLLED_BACK, obteve %v", got.Status)
+	}
+}
+
+// TestEngineApproveJobFromFreshEngineInstance prova o ponto-chave do design:
+// ApproveJob reconstrói o Cleanup de forma 100% determinística a partir de
+// job.Path/staging/container, então funciona a partir de uma SEGUNDA
+// instância de Engine sobre o mesmo .db/staging — o cenário real de
+// `-approve <id>` rodando num processo CLI novo, separado do que criou o job.
+func TestEngineApproveJobFromFreshEngineInstance(t *testing.T) {
+	base := t.TempDir()
+	eng1, events, mediaPath, stage, dbPath, rulesPath := setupEngineAwaitingApproval(t, base, 1000, 500)
+	runToCompletion(t, eng1, events, mediaPath)
+
+	job, err := eng1.store.FindByPath(mediaPath)
+	if err != nil || job == nil {
+		t.Fatalf("esperava job AWAITING_APPROVAL: %v", err)
+	}
+	eng1.Shutdown() // fecha o store da primeira instância (simula fim do processo CLI)
+
+	// Segunda instância "processo novo": abre o MESMO .db/staging do zero.
+	store2, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store2.Close() })
+	re2, err := NewRulesEngine(rulesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng2, err := NewEngine(EngineDeps{
+		Store:   store2,
+		Rules:   re2,
+		Prober:  mockProber{info: MediaInfo{Container: "mkv", VideoCodec: "h264"}},
+		Engines: []TranscoderEngine{&mockTranscoder{outputSize: 500}},
+		Workers: 1,
+		Logger:  slog.New(slog.NewTextHandler(os.Stderr, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := eng2.ApproveJob(job.ID); err != nil {
+		t.Fatalf("ApproveJob (segunda instância) falhou: %v", err)
+	}
+
+	fi, err := os.Stat(mediaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Size() != 500 {
+		t.Errorf("esperava arquivo trocado (500 bytes), obteve %d", fi.Size())
+	}
+	if _, err := os.Stat(filepath.Join(stage, "movie")); err == nil {
+		t.Errorf("staging deveria ser purgada após approve na segunda instância")
+	}
+
+	got, err := store2.FindByID(job.ID)
+	if err != nil || got == nil {
+		t.Fatalf("job deveria continuar no store: %v", err)
+	}
+	if got.Status != StatusCompleted {
+		t.Errorf("status esperado COMPLETED, obteve %v", got.Status)
+	}
+}
+
 func TestEngineWebhooks(t *testing.T) {
 	called := make(chan string, 1)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -291,6 +536,7 @@ global:
     min_saving_pct: 15
   defaults:
     video: { codec: hevc }
+    auto_approve: true
   notifications:
     webhook_url: ` + ts.URL + `
     events: [completed]
@@ -313,13 +559,13 @@ rules:
 	}
 	events := make(chan JobEvent, 64)
 	eng, err := NewEngine(EngineDeps{
-		Store:    store,
-		Rules:    re,
-		Prober:   mockProber{info: MediaInfo{Container: "mkv", VideoCodec: "h264"}},
-		Engines:  []TranscoderEngine{&mockTranscoder{outputSize: 500}}, // 50% economia
-		Workers:  1,
-		Events:   events,
-		Logger:   slog.New(slog.NewTextHandler(os.Stderr, nil)),
+		Store:   store,
+		Rules:   re,
+		Prober:  mockProber{info: MediaInfo{Container: "mkv", VideoCodec: "h264"}},
+		Engines: []TranscoderEngine{&mockTranscoder{outputSize: 500}}, // 50% economia
+		Workers: 1,
+		Events:  events,
+		Logger:  slog.New(slog.NewTextHandler(os.Stderr, nil)),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -361,7 +607,7 @@ func TestEngineUpdatesPathOnContainerChange(t *testing.T) {
 	mediaPath := filepath.Join(base, "movie.mp4")
 	writeFileSize(t, mediaPath, 1000)
 
-	rulesPath := writeRules(t, "version: 1\nglobal:\n  default_driver: mock\n  staging_dir: "+stage+"\n  space_saving:\n    min_saving_pct: 15\n  defaults:\n    video: { codec: hevc }\nrules:\n  - name: r\n    convert:\n      video: { codec: hevc }\n      container: mkv\n")
+	rulesPath := writeRules(t, "version: 1\nglobal:\n  default_driver: mock\n  staging_dir: "+stage+"\n  space_saving:\n    min_saving_pct: 15\n  defaults:\n    video: { codec: hevc }\n    auto_approve: true\nrules:\n  - name: r\n    convert:\n      video: { codec: hevc }\n      container: mkv\n")
 
 	store, err := NewStore(filepath.Join(base, "codecany.db"))
 	if err != nil {
@@ -375,13 +621,13 @@ func TestEngineUpdatesPathOnContainerChange(t *testing.T) {
 	}
 	events := make(chan JobEvent, 64)
 	eng, err := NewEngine(EngineDeps{
-		Store:    store,
-		Rules:    re,
-		Prober:   mockProber{info: MediaInfo{Container: "mp4", VideoCodec: "h264"}},
-		Engines:  []TranscoderEngine{&mockTranscoder{outputSize: 500}}, // 50% economia
-		Workers:  1,
-		Events:   events,
-		Logger:   slog.New(slog.NewTextHandler(os.Stderr, nil)),
+		Store:   store,
+		Rules:   re,
+		Prober:  mockProber{info: MediaInfo{Container: "mp4", VideoCodec: "h264"}},
+		Engines: []TranscoderEngine{&mockTranscoder{outputSize: 500}}, // 50% economia
+		Workers: 1,
+		Events:  events,
+		Logger:  slog.New(slog.NewTextHandler(os.Stderr, nil)),
 	})
 	if err != nil {
 		t.Fatal(err)

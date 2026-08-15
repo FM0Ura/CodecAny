@@ -66,6 +66,15 @@ CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_path ON jobs(path);
 `
 
+// jobColumns lista as colunas lidas por todo SELECT que reconstrói um *Job
+// (scanJob). Centralizado aqui porque -list-staged/-approve/-reject (Fase 1)
+// e -history (Fase 6) rodam num processo CLI separado do que criou o job —
+// o banco é a única fonte de verdade, então scanJob precisa trazer TODAS as
+// colunas persistidas (started_at/finished_at/métricas/error), não só as
+// usadas pelo caminho de execução original (NextPendingJob etc.).
+const jobColumns = `id, path, status, driver, target, media_info, priority, created_at,
+	started_at, finished_at, original_size, converted_size, saved_bytes, ratio_pct, error`
+
 // Close encerra a conexão com o banco.
 func (s *Store) Close() error { return s.db.Close() }
 
@@ -156,7 +165,7 @@ func (s *Store) GetTotalSavings() (SizeMetrics, error) {
 // (maior prioridade primeiro) e em ordem de criação (FIFO como desempate).
 func (s *Store) NextPendingJob() (*Job, error) {
 	row := s.db.QueryRow(
-		`SELECT id, path, status, driver, target, media_info, priority, created_at
+		`SELECT `+jobColumns+`
 		 FROM jobs
 		 WHERE status = ?
 		 ORDER BY priority DESC, created_at ASC
@@ -168,7 +177,7 @@ func (s *Store) NextPendingJob() (*Job, error) {
 // ClaimPendingMarks marca todos os Jobs QUEUED como IN_PROGRESS para orquestração.
 func (s *Store) ClaimPendingMarks() ([]*Job, error) {
 	rows, err := s.db.Query(
-		`SELECT id, path, status, driver, target, media_info, priority, created_at
+		`SELECT `+jobColumns+`
 		 FROM jobs WHERE status = ? ORDER BY priority DESC, created_at ASC`, StatusQueued,
 	)
 	if err != nil {
@@ -217,10 +226,39 @@ func (s *Store) RecoverInterrupted() ([]*Job, error) {
 // FindByPath returns o Job mais recente para um caminho, se existir.
 func (s *Store) FindByPath(path string) (*Job, error) {
 	row := s.db.QueryRow(
-		`SELECT id, path, status, driver, target, media_info, priority, created_at
+		`SELECT `+jobColumns+`
 		 FROM jobs WHERE path=? ORDER BY created_at DESC LIMIT 1`, path,
 	)
 	return scanJob(row)
+}
+
+// FindByID busca um Job pelo seu identificador único. Retorna (nil, nil)
+// quando não encontrado (mesma convenção de scanJob/FindByPath).
+func (s *Store) FindByID(id string) (*Job, error) {
+	row := s.db.QueryRow(`SELECT `+jobColumns+` FROM jobs WHERE id=?`, id)
+	return scanJob(row)
+}
+
+// ListByStatus lista todos os Jobs num status específico, em ordem de
+// criação (FIFO) — usado por ListStaged (AWAITING_APPROVAL) e, na Fase 6,
+// como base de ListJobs.
+func (s *Store) ListByStatus(status JobStatus) ([]*Job, error) {
+	rows, err := s.db.Query(
+		`SELECT `+jobColumns+` FROM jobs WHERE status=? ORDER BY created_at ASC`, status,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var jobs []*Job
+	for rows.Next() {
+		j, err := scanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, j)
+	}
+	return jobs, rows.Err()
 }
 
 type rowScanner interface {
@@ -229,12 +267,17 @@ type rowScanner interface {
 
 func scanJob(row rowScanner) (*Job, error) {
 	var (
-		j                Job
-		targetRaw, miRaw string
-		createdRaw       string
-		startedRaw       sql.NullString
+		j                  Job
+		targetRaw, miRaw   string
+		createdRaw         string
+		startedRaw, finRaw sql.NullString
+		errMsg             sql.NullString
+		origSize, convSize sql.NullInt64
+		savedBytes         sql.NullInt64
+		ratioPct           sql.NullFloat64
 	)
-	err := row.Scan(&j.ID, &j.Path, &j.Status, &j.Driver, &targetRaw, &miRaw, &j.Priority, &createdRaw)
+	err := row.Scan(&j.ID, &j.Path, &j.Status, &j.Driver, &targetRaw, &miRaw, &j.Priority, &createdRaw,
+		&startedRaw, &finRaw, &origSize, &convSize, &savedBytes, &ratioPct, &errMsg)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
@@ -247,6 +290,19 @@ func scanJob(row rowScanner) (*Job, error) {
 	if startedRaw.Valid {
 		t, _ := time.Parse(time.RFC3339, startedRaw.String)
 		j.StartedAt = &t
+	}
+	if finRaw.Valid {
+		t, _ := time.Parse(time.RFC3339, finRaw.String)
+		j.FinishedAt = &t
+	}
+	if errMsg.Valid {
+		j.Error = errMsg.String
+	}
+	j.SizeMetrics = SizeMetrics{
+		OriginalSizeBytes:   origSize.Int64,
+		ConvertedSizeBytes:  convSize.Int64,
+		SavedBytes:          savedBytes.Int64,
+		CompressionRatioPct: ratioPct.Float64,
 	}
 	return &j, nil
 }

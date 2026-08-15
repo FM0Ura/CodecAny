@@ -334,6 +334,24 @@ loop:
 		return
 	}
 
+	if !job.Target.AutoApprove {
+		// Pausa para aprovação manual: NÃO chama cl.Commit()/cl.Abort() — o
+		// output convertido permanece em staging, o worker apenas retorna
+		// (libera a CPU para o próximo job da fila). Como AWAITING_APPROVAL
+		// não é QUEUED, NextPendingJob() nunca mais reclama este job até
+		// ação explícita via ApproveJob/RejectJob.
+		e.store.UpdateMetrics(job.ID, m)
+		e.store.UpdateStatus(job.ID, StatusAwaitingApproval, nil, nil, "")
+		job.Status = StatusAwaitingApproval
+		job.SizeMetrics = m
+		e.sendWebhook(job, "awaiting_approval")
+		e.log.Info("job aguardando aprovação manual", "job_id", job.ID, "path", job.Path,
+			"saved_bytes", m.SavedBytes, "savings_pct", m.CompressionRatioPct)
+		e.emit(JobEvent{Kind: EventJobAwaitingApproval, JobID: job.ID, FilePath: job.Path,
+			Driver: job.Driver, Metrics: m, TargetCodec: job.Target.VideoCodec})
+		return
+	}
+
 	// FINALIZING → COMMIT
 	e.store.UpdateStatus(job.ID, StatusFinalizing, nil, nil, "")
 	if err := cl.Commit(); err != nil {
@@ -370,6 +388,128 @@ func (e *Engine) fail(job *Job, msg string) {
 	e.sendWebhook(job, "failed")
 	e.log.Error("job falhou", "job_id", job.ID, "path", job.Path, "driver", job.Driver, "error", msg)
 	e.emit(JobEvent{Kind: EventJobError, JobID: job.ID, FilePath: job.Path, Driver: job.Driver, Error: msg})
+}
+
+// ApproveJob comita um Job em StatusAwaitingApproval: substitui o original
+// pelo output em staging (mesmo caminho FINALIZING→Commit do fluxo
+// auto_approve) e marca COMPLETED. Reconstrói o *Cleanup a partir de
+// job.Path/e.staging/job.Target.Container — 100% determinístico a partir
+// desses três valores (Cleanup.Track() nunca é chamado em lugar nenhum do
+// código, então não há estado extra a recuperar) — por isso funciona mesmo
+// quando chamado de um processo CLI novo (-approve), diferente do que criou
+// o job originalmente.
+func (e *Engine) ApproveJob(id string) error {
+	job, err := e.store.FindByID(id)
+	if err != nil {
+		return err
+	}
+	if job == nil {
+		return fmt.Errorf("job não encontrado: %s", id)
+	}
+	if job.Status != StatusAwaitingApproval {
+		return fmt.Errorf("job %s não está aguardando aprovação (status atual: %s)", id, job.Status)
+	}
+
+	cl, err := NewCleanup(job.Path, e.staging, job.Target.Container)
+	if err != nil {
+		return fmt.Errorf("reconstruir staging: %w", err)
+	}
+	e.store.UpdateStatus(job.ID, StatusFinalizing, nil, nil, "")
+	if err := cl.Commit(); err != nil {
+		e.fail(job, fmt.Sprintf("finalização: %v", err))
+		return err
+	}
+	if fp := cl.FinalPath(); fp != job.Path {
+		if err := e.store.UpdatePath(job.ID, fp); err != nil {
+			e.log.Error("falha ao atualizar path do job", "job_id", job.ID, "error", err.Error())
+		}
+		job.Path = fp
+	}
+	fin := time.Now()
+	e.store.UpdateStatus(job.ID, StatusCompleted, nil, &fin, "")
+	job.Status = StatusCompleted
+	e.sendWebhook(job, "completed")
+	e.log.Info("job aprovado e completo", "job_id", job.ID, "path", job.Path,
+		"saved_bytes", job.SizeMetrics.SavedBytes, "savings_pct", job.SizeMetrics.CompressionRatioPct)
+	e.emit(JobEvent{Kind: EventJobComplete, JobID: job.ID, FilePath: job.Path, Driver: job.Driver,
+		Success: true, SizeDiff: job.SizeMetrics.SavedBytes})
+	return nil
+}
+
+// RejectJob descarta o output em staging de um Job em StatusAwaitingApproval,
+// preservando o arquivo original intocado, e marca ROLLED_BACK. Mesma
+// reconstrução determinística de Cleanup usada por ApproveJob.
+func (e *Engine) RejectJob(id string) error {
+	job, err := e.store.FindByID(id)
+	if err != nil {
+		return err
+	}
+	if job == nil {
+		return fmt.Errorf("job não encontrado: %s", id)
+	}
+	if job.Status != StatusAwaitingApproval {
+		return fmt.Errorf("job %s não está aguardando aprovação (status atual: %s)", id, job.Status)
+	}
+
+	cl, err := NewCleanup(job.Path, e.staging, job.Target.Container)
+	if err != nil {
+		return fmt.Errorf("reconstruir staging: %w", err)
+	}
+	if err := cl.Abort(); err != nil {
+		e.log.Error("falha ao limpar staging na rejeição", "job_id", job.ID, "error", err.Error())
+	}
+	fin := time.Now()
+	e.store.UpdateStatus(job.ID, StatusRolledBack, nil, &fin, "")
+	job.Status = StatusRolledBack
+	e.sendWebhook(job, "failed")
+	e.log.Info("job rejeitado pelo usuário", "job_id", job.ID, "path", job.Path)
+	e.emit(JobEvent{Kind: EventJobComplete, JobID: job.ID, FilePath: job.Path, Driver: job.Driver,
+		Success: false, SizeDiff: job.SizeMetrics.SavedBytes})
+	return nil
+}
+
+// ListStaged lista todos os Jobs aguardando aprovação manual (StatusAwaitingApproval).
+func (e *Engine) ListStaged() ([]*Job, error) {
+	return e.store.ListByStatus(StatusAwaitingApproval)
+}
+
+// ApproveAll aprova todos os jobs aguardando aprovação. Retorna quantos foram
+// aprovados com sucesso e a lista de erros encontrados (um job com falha não
+// interrompe o processamento dos demais).
+func (e *Engine) ApproveAll() (int, []error) {
+	jobs, err := e.ListStaged()
+	if err != nil {
+		return 0, []error{err}
+	}
+	var n int
+	var errs []error
+	for _, job := range jobs {
+		if err := e.ApproveJob(job.ID); err != nil {
+			errs = append(errs, fmt.Errorf("job %s: %w", job.ID, err))
+			continue
+		}
+		n++
+	}
+	return n, errs
+}
+
+// RejectAll rejeita todos os jobs aguardando aprovação. Mesma semântica de
+// tolerância a falha parcial de ApproveAll.
+func (e *Engine) RejectAll() (int, []error) {
+	jobs, err := e.ListStaged()
+	if err != nil {
+		return 0, []error{err}
+	}
+	var n int
+	var errs []error
+	for _, job := range jobs {
+		if err := e.RejectJob(job.ID); err != nil {
+			errs = append(errs, fmt.Errorf("job %s: %w", job.ID, err))
+			continue
+		}
+		n++
+	}
+	return n, errs
 }
 
 // CloseCancellation sinaliza os workers para abortar o job em andamento.

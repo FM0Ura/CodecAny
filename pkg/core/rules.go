@@ -31,6 +31,12 @@ type RuleDefaults struct {
 		Bitrate string `yaml:"bitrate" json:"bitrate"`
 	} `yaml:"audio" json:"audio"`
 	Container string `yaml:"container" json:"container"`
+
+	// AutoApprove é o default global de aprovação automática (ver Rule.AutoApprove
+	// para o override por regra). *bool para distinguir "não configurado em
+	// lugar nenhum" (nil → boolVal(nil)==false, exige aprovação manual) de
+	// "explicitamente false" — mesmo padrão já usado para Video.Lossless.
+	AutoApprove *bool `yaml:"auto_approve" json:"auto_approve"`
 }
 
 // ItemsMatch permite que um campo case por igualdade escalar OU por lista OR.
@@ -95,6 +101,10 @@ type Rule struct {
 	Match   Match       `yaml:"match" json:"match"`
 	Action  RuleAction  `yaml:"action" json:"action"`
 	Convert ConvertSpec `yaml:"convert" json:"convert"`
+
+	// AutoApprove, quando definido (não-nil), sobrepõe o default global
+	// RuleDefaults.AutoApprove só para esta regra.
+	AutoApprove *bool `yaml:"auto_approve" json:"auto_approve"`
 }
 
 // RuleFile é a estrutura raiz do arquivo de regras.
@@ -289,7 +299,7 @@ func (r *RulesEngine) Evaluate(mi MediaInfo) (RuleOutcome, TargetSpec, error) {
 		if rule.Action == ActionSkip {
 			return OutcomeSkip, TargetSpec{}, nil
 		}
-		return OutcomeConvert, mergeSpec(rule.Convert, r.file.Global.Defaults), nil
+		return OutcomeConvert, mergeSpec(rule, r.file.Global.Defaults), nil
 	}
 	return OutcomeSkipNoRule, TargetSpec{}, nil
 }
@@ -433,9 +443,16 @@ func containerMismatch(crit Item, container string) (string, bool) {
 	return fmt.Sprintf("media=%v, esperado=%v", container, crit.Values), false
 }
 
-func mergeSpec(c ConvertSpec, def RuleDefaults) TargetSpec {
+func mergeSpec(rule Rule, def RuleDefaults) TargetSpec {
+	c := rule.Convert
 	out := TargetSpec{
 		Container: def.Container,
+	}
+	// AutoApprove: override de regra > default global (mesmo padrão de Lossless).
+	if rule.AutoApprove != nil {
+		out.AutoApprove = *rule.AutoApprove
+	} else {
+		out.AutoApprove = boolVal(def.AutoApprove)
 	}
 	var losslessSetByRule bool
 	if c.Video != nil {

@@ -8,6 +8,12 @@ const (
 	EventJobProgress JobEventKind = "OnJobProgress"
 	EventJobComplete JobEventKind = "OnJobComplete"
 	EventJobError    JobEventKind = "OnJobError"
+
+	// EventJobAwaitingApproval é emitido quando um Job termina a verificação
+	// de integridade com sucesso mas fica pausado em StatusAwaitingApproval
+	// (auto_approve=false) — o output convertido está em staging aguardando
+	// ApproveJob/RejectJob.
+	EventJobAwaitingApproval JobEventKind = "OnJobAwaitingApproval"
 )
 
 // JobEvent é a unidade de comunicação emitida no canal chan JobEvent.
@@ -20,4 +26,10 @@ type JobEvent struct {
 	Success  bool         `json:"success"`
 	Error    string       `json:"error,omitempty"`
 	SizeDiff int64        `json:"size_diff"`
+
+	// Metrics e TargetCodec só são preenchidos em EventJobAwaitingApproval,
+	// para compor o resumo do prompt interativo (tamanhos, economia, codec
+	// alvo) sem precisar consultar o Store de volta.
+	Metrics     SizeMetrics `json:"metrics,omitempty"`
+	TargetCodec string      `json:"target_codec,omitempty"`
 }
