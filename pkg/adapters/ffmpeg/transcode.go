@@ -189,10 +189,11 @@ func buildArgs(target core.TargetSpec, isMP4 bool, audioCodecs []string) []strin
 				args = append(args, "-b:a", target.AudioBitrate)
 			}
 		}
-	} else {
-		// Preserva o áudio surround original fazendo cópia direta se não especificado
-		args = append(args, "-c:a", "copy")
 	}
+	// Se nenhum codec de áudio foi especificado (nem pela regra, nem por
+	// default), omite a flag -c:a e deixa o ffmpeg escolher um encoder
+	// compatível com o container de saída. Forçar "copy" aqui falha quando o
+	// codec de origem é incompatível com o container alvo (ex.: DTS/TrueHD → MP4).
 
 	// Sempre copia legendas (com mapping específico se for MP4)
 	if isMP4 {

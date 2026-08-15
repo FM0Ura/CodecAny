@@ -22,7 +22,7 @@ func TestBuildArgs(t *testing.T) {
 				"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-stats_period", "0.1",
 				"-c:v", "copy", "-c:v:0", "libx265", "-preset", "slow", "-crf", "20",
 				"-pix_fmt", "yuv420p10le", "-x265-params", "open-gop=0",
-				"-c:a", "copy", "-c:s", "copy",
+				"-c:s", "copy",
 			},
 		},
 		{
@@ -51,7 +51,7 @@ func TestBuildArgs(t *testing.T) {
 				"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-stats_period", "0.1",
 				"-c:v", "copy", "-c:v:0", "libx265", "-preset", "slow",
 				"-x265-params", "lossless=1:open-gop=0",
-				"-c:a", "copy", "-c:s", "copy",
+				"-c:s", "copy",
 			},
 		},
 		{
@@ -65,7 +65,7 @@ func TestBuildArgs(t *testing.T) {
 				"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-stats_period", "0.1",
 				"-c:v", "copy", "-c:v:0", "libsvtav1", "-preset", "6", "-crf", "30",
 				"-pix_fmt", "yuv420p10le", "-svtav1-params", "tune=0",
-				"-c:a", "copy", "-c:s", "copy",
+				"-c:s", "copy",
 			},
 		},
 		{
@@ -78,7 +78,7 @@ func TestBuildArgs(t *testing.T) {
 				"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-stats_period", "0.1",
 				"-c:v", "copy", "-c:v:0", "libaom-av1", "-preset", "4", "-crf", "0",
 				"-aom-params", "lossless=1",
-				"-c:a", "copy", "-c:s", "copy",
+				"-c:s", "copy",
 			},
 		},
 		{
@@ -104,7 +104,7 @@ func TestBuildArgs(t *testing.T) {
 			want: []string{
 				"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-stats_period", "0.1",
 				"-c:v", "copy", "-c:v:0", "hevc_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", "23",
-				"-pix_fmt", "yuv420p10le", "-c:a", "copy", "-c:s", "copy",
+				"-pix_fmt", "yuv420p10le", "-c:s", "copy",
 			},
 		},
 		{
@@ -115,7 +115,7 @@ func TestBuildArgs(t *testing.T) {
 			},
 			want: []string{
 				"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-stats_period", "0.1",
-				"-c:v", "copy", "-c:v:0", "hevc_vaapi", "-c:a", "copy", "-c:s", "copy",
+				"-c:v", "copy", "-c:v:0", "hevc_vaapi", "-c:s", "copy",
 			},
 		},
 		{
@@ -128,7 +128,7 @@ func TestBuildArgs(t *testing.T) {
 			want: []string{
 				"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-stats_period", "0.1",
 				"-c:v", "copy", "-c:v:0", "hevc_nvenc", "-preset", "lossless",
-				"-c:a", "copy", "-c:s", "copy",
+				"-c:s", "copy",
 			},
 		},
 		{
@@ -141,7 +141,7 @@ func TestBuildArgs(t *testing.T) {
 				"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-stats_period", "0.1",
 				"-c:v", "copy", "-c:v:0", "libx265", "-preset", "slow", "-crf", "20",
 				"-pix_fmt", "yuv420p10le", "-x265-params", "open-gop=0",
-				"-c:a", "copy", "-c:s", "mov_text",
+				"-c:s", "mov_text",
 			},
 		},
 	}
