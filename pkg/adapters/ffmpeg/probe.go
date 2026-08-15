@@ -5,7 +5,11 @@ package ffmpeg
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/FM0Ura/codecany/pkg/core"
 )
@@ -58,15 +62,42 @@ func (p *Prober) Probe(path string) (core.MediaInfo, error) {
 	for _, s := range r.Streams {
 		switch s.CodecType {
 		case "video":
-			mi.HasVideo = true
-			mi.VideoCodec = s.CodecName
-			mi.VideoBitrate = parseBitrate(s.BitRate)
-			mi.Width, mi.Height = s.Width, s.Height
+			if !mi.HasVideo {
+				mi.HasVideo = true
+				mi.VideoCodec = s.CodecName
+				mi.VideoBitrate = parseBitrate(s.BitRate)
+				mi.Width, mi.Height = s.Width, s.Height
+			}
 		case "audio":
 			mi.HasAudio = true
 			mi.AudioCodecs = append(mi.AudioCodecs, s.CodecName)
 		}
 	}
+
+	base := strings.TrimSuffix(path, filepath.Ext(path))
+	dir := filepath.Dir(path)
+	baseNameLower := strings.ToLower(filepath.Base(base))
+
+	if files, err := os.ReadDir(dir); err == nil {
+		for _, f := range files {
+			if f.IsDir() {
+				continue
+			}
+			name := f.Name()
+			nameLower := strings.ToLower(name)
+			if strings.HasPrefix(nameLower, baseNameLower) {
+				ext := filepath.Ext(nameLower)
+				if ext == ".srt" || ext == ".vtt" || ext == ".ass" {
+					rem := strings.TrimPrefix(nameLower, baseNameLower)
+					if rem == ext || (strings.HasPrefix(rem, ".") && strings.HasSuffix(rem, ext)) {
+						mi.SubtitlePaths = append(mi.SubtitlePaths, filepath.Join(dir, name))
+					}
+				}
+			}
+		}
+	}
+	sort.Strings(mi.SubtitlePaths)
+
 	return mi, nil
 }
 
