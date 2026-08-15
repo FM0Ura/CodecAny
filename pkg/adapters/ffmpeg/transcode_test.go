@@ -19,7 +19,7 @@ func TestBuildArgs(t *testing.T) {
 				VideoCodec: "hevc",
 			},
 			want: []string{
-				"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1",
+				"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-stats_period", "0.1",
 				"-c:v", "copy", "-c:v:0", "libx265", "-preset", "slow", "-crf", "20",
 				"-pix_fmt", "yuv420p10le", "-x265-params", "open-gop=0",
 				"-c:a", "copy", "-c:s", "copy",
@@ -35,7 +35,7 @@ func TestBuildArgs(t *testing.T) {
 				AudioBitrate: "192k",
 			},
 			want: []string{
-				"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1",
+				"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-stats_period", "0.1",
 				"-c:v", "copy", "-c:v:0", "libx265", "-preset", "fast", "-crf", "22",
 				"-pix_fmt", "yuv420p10le", "-x265-params", "open-gop=0",
 				"-c:a", "aac", "-b:a", "192k", "-c:s", "copy",
@@ -48,7 +48,7 @@ func TestBuildArgs(t *testing.T) {
 				VideoLossless: true,
 			},
 			want: []string{
-				"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1",
+				"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-stats_period", "0.1",
 				"-c:v", "copy", "-c:v:0", "libx265", "-preset", "slow",
 				"-x265-params", "lossless=1:open-gop=0",
 				"-c:a", "copy", "-c:s", "copy",
@@ -62,7 +62,7 @@ func TestBuildArgs(t *testing.T) {
 				VideoPreset: "6",
 			},
 			want: []string{
-				"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1",
+				"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-stats_period", "0.1",
 				"-c:v", "copy", "-c:v:0", "libsvtav1", "-preset", "6", "-crf", "30",
 				"-pix_fmt", "yuv420p10le", "-svtav1-params", "tune=0",
 				"-c:a", "copy", "-c:s", "copy",
@@ -75,7 +75,7 @@ func TestBuildArgs(t *testing.T) {
 				VideoLossless: true,
 			},
 			want: []string{
-				"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1",
+				"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-stats_period", "0.1",
 				"-c:v", "copy", "-c:v:0", "libaom-av1", "-preset", "4", "-crf", "0",
 				"-aom-params", "lossless=1",
 				"-c:a", "copy", "-c:s", "copy",
@@ -90,7 +90,7 @@ func TestBuildArgs(t *testing.T) {
 				AudioCodec:  "copy",
 			},
 			want: []string{
-				"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1",
+				"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-stats_period", "0.1",
 				"-c:v", "copy", "-c:v:0", "libx264", "-preset", "medium", "-crf", "23",
 				"-c:a", "copy", "-c:s", "copy",
 			},
@@ -102,7 +102,7 @@ func TestBuildArgs(t *testing.T) {
 				VideoHWAccel: "nvenc",
 			},
 			want: []string{
-				"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1",
+				"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-stats_period", "0.1",
 				"-c:v", "copy", "-c:v:0", "hevc_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", "23",
 				"-pix_fmt", "yuv420p10le", "-c:a", "copy", "-c:s", "copy",
 			},
@@ -114,7 +114,7 @@ func TestBuildArgs(t *testing.T) {
 				VideoHWAccel: "vaapi",
 			},
 			want: []string{
-				"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1",
+				"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-stats_period", "0.1",
 				"-c:v", "copy", "-c:v:0", "hevc_vaapi", "-c:a", "copy", "-c:s", "copy",
 			},
 		},
@@ -126,7 +126,7 @@ func TestBuildArgs(t *testing.T) {
 				VideoLossless: true,
 			},
 			want: []string{
-				"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1",
+				"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-stats_period", "0.1",
 				"-c:v", "copy", "-c:v:0", "hevc_nvenc", "-preset", "lossless",
 				"-c:a", "copy", "-c:s", "copy",
 			},
@@ -138,7 +138,7 @@ func TestBuildArgs(t *testing.T) {
 				Container:  "mp4",
 			},
 			want: []string{
-				"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1",
+				"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-stats_period", "0.1",
 				"-c:v", "copy", "-c:v:0", "libx265", "-preset", "slow", "-crf", "20",
 				"-pix_fmt", "yuv420p10le", "-x265-params", "open-gop=0",
 				"-c:a", "copy", "-c:s", "mov_text",
@@ -166,7 +166,7 @@ func TestBuildArgs_DynamicAudio(t *testing.T) {
 	audioCodecs := []string{"truehd", "aac", "dts"}
 
 	want := []string{
-		"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1",
+		"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-stats_period", "0.1",
 		"-c:v", "copy", "-c:v:0", "libsvtav1", "-preset", "5", "-crf", "28",
 		"-pix_fmt", "yuv420p10le", "-svtav1-params", "tune=0",
 		"-c:a:0", "flac", "-c:a:1", "copy", "-c:a:2", "flac",

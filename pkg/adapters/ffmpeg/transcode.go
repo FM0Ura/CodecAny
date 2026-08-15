@@ -36,7 +36,7 @@ func isHeavyLosslessAudio(codec string) bool {
 
 // buildArgs monta os argumentos do ffmpeg a partir do TargetSpec.
 func buildArgs(target core.TargetSpec, isMP4 bool, audioCodecs []string) []string {
-	args := []string{"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1"}
+	args := []string{"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-stats_period", "0.1"}
 
 	if target.VideoCodec != "" {
 		codec := target.VideoCodec
