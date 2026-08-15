@@ -14,6 +14,7 @@ import (
 // (Zero-Residue Policy, seção 5) mesmo em caso de falha.
 type Cleanup struct {
 	jobPath   string
+	finalPath string
 	stageDir  string
 	output    string
 	localBak  string
@@ -24,18 +25,49 @@ type Cleanup struct {
 
 // NewCleanup prepara a pasta de staging e caminhos temporários de um Job.
 // O backup é criado na MESMA pasta do original para permitir troca atômica.
-func NewCleanup(jobPath, stageRoot string) (*Cleanup, error) {
-	base := strings.TrimSuffix(filepath.Base(jobPath), filepath.Ext(jobPath))
+//
+// targetContainer é o `convert.container` já resolvido da regra (TargetSpec.
+// Container). Quando vazio, ou quando normaliza para a mesma extensão do
+// arquivo de entrada, o comportamento é o de sempre: o output em staging e o
+// caminho final reaproveitam a extensão original. Quando difere, tanto o
+// output em staging quanto o caminho final (finalPath) passam a usar a nova
+// extensão — do contrário o arquivo trocado ficaria com bytes de um
+// container diferente do nome que carrega.
+func NewCleanup(jobPath, stageRoot, targetContainer string) (*Cleanup, error) {
+	inExt := filepath.Ext(jobPath)
+	base := strings.TrimSuffix(filepath.Base(jobPath), inExt)
 	stage := filepath.Join(stageRoot, base)
 	if err := os.MkdirAll(stage, 0o755); err != nil {
 		return nil, fmt.Errorf("criar staging: %w", err)
 	}
+
+	outExt := inExt
+	finalPath := jobPath
+	if norm := normalizeContainerExt(targetContainer); norm != "" && norm != strings.ToLower(strings.TrimPrefix(inExt, ".")) {
+		outExt = "." + norm
+		finalPath = filepath.Join(filepath.Dir(jobPath), base+outExt)
+	}
+
 	return &Cleanup{
-		jobPath:  jobPath,
-		stageDir: stage,
-		output:   filepath.Join(stage, "output"+filepath.Ext(jobPath)),
-		localBak: jobPath + ".bak",
+		jobPath:   jobPath,
+		finalPath: finalPath,
+		stageDir:  stage,
+		output:    filepath.Join(stage, "output"+outExt),
+		localBak:  jobPath + ".bak",
 	}, nil
+}
+
+// normalizeContainerExt reduz um valor de `convert.container` (ex.: "mp4",
+// "MKV", ".webm") a uma extensão em minúsculas sem o ponto. Vazio ou "auto"
+// significam "sem container alvo definido" (nenhuma troca de extensão deve
+// ocorrer) — "auto" é o coringa usado em rules.go/rules.example.yaml para
+// "manter o mesmo container do arquivo de entrada", não um nome de extensão.
+func normalizeContainerExt(container string) string {
+	c := strings.ToLower(strings.TrimSpace(container))
+	if c == "auto" {
+		return ""
+	}
+	return strings.TrimPrefix(c, ".")
 }
 
 // StageDir retorna o caminho da pasta de trabalho temporária.
@@ -44,12 +76,27 @@ func (c *Cleanup) StageDir() string { return c.stageDir }
 // Output retorna o caminho do arquivo convertido em staging.
 func (c *Cleanup) Output() string { return c.output }
 
+// FinalPath retorna o caminho onde o arquivo convertido ficará após um
+// Commit bem-sucedido. É igual a jobPath quando o container alvo não muda a
+// extensão; caso contrário, é o novo caminho (nova extensão) que substitui o
+// original — o chamador deve atualizar qualquer referência persistida ao
+// caminho do job (Job.Path, eventos, webhooks, logs) para este valor após o
+// Commit, já que o caminho antigo deixa de existir no disco.
+func (c *Cleanup) FinalPath() string { return c.finalPath }
+
 // Track registra um arquivo temporário para purga.
 func (c *Cleanup) Track(path string) { c.tmpFiles = append(c.tmpFiles, path) }
 
 // Commit realiza a troca atômica do output no lugar do original e purga resíduos.
-// Sequência: renomeia original → .bak local, output → original, remove .bak
+// Sequência: renomeia original → .bak local, output → finalPath, remove .bak
 // e remove toda a staging. (FINALIZING bem-sucedido)
+//
+// Quando o container alvo mudou a extensão (finalPath != jobPath), o arquivo
+// original permanece de fora como .bak até a troca atômica ter sucesso e só
+// então é removido — assim o arquivo com a extensão antiga deixa de existir
+// e sobra apenas finalPath (nova extensão) com o conteúdo convertido. Se
+// finalPath já existir como resíduo de uma execução anterior, replaceAtomic
+// o substitui com a mesma semântica de troca atômica usada no caso normal.
 //
 // O staging pode ficar em outro filesystem que o original; nesse caso o rename
 // cruzaria devices (EXDEV) e falharia, então há fallback que copia o output
@@ -61,7 +108,7 @@ func (c *Cleanup) Commit() error {
 	if err := os.Rename(c.jobPath, c.localBak); err != nil {
 		return fmt.Errorf("backup original: %w", err)
 	}
-	if err := replaceAtomic(c.output, c.jobPath); err != nil {
+	if err := replaceAtomic(c.output, c.finalPath); err != nil {
 		os.Rename(c.localBak, c.jobPath) // reverte
 		return fmt.Errorf("substituição atômica: %w", err)
 	}

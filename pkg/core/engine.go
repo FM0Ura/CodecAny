@@ -254,7 +254,7 @@ func (e *Engine) runJob(ctx context.Context, job *Job) {
 	e.emit(JobEvent{Kind: EventJobStart, JobID: job.ID, FilePath: job.Path, Driver: job.Driver})
 	e.log.Info("job iniciado", "job_id", job.ID, "path", job.Path, "driver", job.Driver)
 
-	cl, err := NewCleanup(job.Path, e.staging)
+	cl, err := NewCleanup(job.Path, e.staging, job.Target.Container)
 	if err != nil {
 		e.fail(job, fmt.Sprintf("staging: %v", err))
 		return
