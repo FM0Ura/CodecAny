@@ -4,6 +4,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -48,6 +49,10 @@ func main() {
 	history := flag.Bool("history", false, "lista o histórico de jobs (com -status/-since) e sai")
 	historyStatus := flag.String("status", "", "filtra -history por status (ex.: COMPLETED, FAILED)")
 	historySince := flag.String("since", "", "filtra -history por janela de tempo (ex.: 24h, 30m)")
+
+	// -health-check (Fase 5): varredura standalone de integridade, sem
+	// enfileirar/transcodificar nada — ver runHealthCheck.
+	healthCheck := flag.Bool("health-check", false, "varre -dir/-file em busca de arquivos corrompidos (sem transcodificar) e sai")
 	flag.Parse()
 
 	if *listStaged || *approveID != "" || *approveAll || *rejectID != "" || *rejectAll || *history {
@@ -69,6 +74,13 @@ func main() {
 			historyStatus: *historyStatus,
 			historySince:  *historySince,
 		}, os.Stdout))
+	}
+
+	// -health-check (Fase 5): desvia antes da checagem de dirs/files vazios
+	// (reaproveita os mesmos dirs/files já parseados de -dir/-file) para uma
+	// varredura standalone — nunca sobe Store/RulesEngine/Engine/Watcher.
+	if *healthCheck {
+		os.Exit(runHealthCheck(dirs, files, ffmpeg.NewVerifier(), os.Stdout, *jsonLog))
 	}
 
 	if len(dirs) == 0 && len(files) == 0 {
@@ -356,6 +368,64 @@ func runManagementCommand(a managementArgs, out io.Writer) int {
 		return cmdRejectAll(eng, out)
 	case a.history:
 		return cmdHistory(eng, a.historyStatus, a.historySince, out)
+	}
+	return 0
+}
+
+// healthCheckResult é a linha de saída JSON de -health-check (uma por
+// arquivo verificado, quando -json está ativo).
+type healthCheckResult struct {
+	Path   string `json:"path"`
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
+}
+
+// runHealthCheck implementa o modo -health-check standalone (Fase 5): varre
+// dirs via core.DiscoverFiles (mesmo filtro de extensão do watcher em tempo
+// real) e usa files diretamente (sem filtro, mesmo comportamento que -file já
+// tem no resto do programa), chamando verifier.Verify em cada arquivo
+// encontrado. Nunca enfileira nada, nunca chama HandleDiscovered, nunca sobe
+// Engine/Store/Watcher — só detecção, sem nenhuma tentativa de reparo
+// automático (fora de escopo, ver docs/propostas_v1.2_adicional.md).
+//
+// verifier é injetado (em vez de construído internamente via
+// ffmpeg.NewVerifier()) para permitir testar esta função com um fake, sem
+// depender de um binário ffmpeg real.
+//
+// Retorna 1 se algum arquivo corrompido foi encontrado (scriptável em
+// cron/CI), 0 caso contrário.
+func runHealthCheck(dirs, files []string, verifier core.MediaVerifier, w io.Writer, jsonOut bool) int {
+	found, err := core.DiscoverFiles(dirs)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "erro ao varrer diretórios:", err)
+		return 1
+	}
+	targets := append(found, files...)
+
+	corrupted := false
+	enc := json.NewEncoder(w)
+	for _, path := range targets {
+		verifyErr := verifier.Verify(path)
+		if verifyErr != nil {
+			corrupted = true
+		}
+		if jsonOut {
+			res := healthCheckResult{Path: path, Status: "ok"}
+			if verifyErr != nil {
+				res.Status = "corrupted"
+				res.Error = verifyErr.Error()
+			}
+			_ = enc.Encode(res)
+			continue
+		}
+		if verifyErr != nil {
+			fmt.Fprintf(w, "[CORRUPTED] %s: %v\n", path, verifyErr)
+			continue
+		}
+		fmt.Fprintf(w, "[OK] %s\n", path)
+	}
+	if corrupted {
+		return 1
 	}
 	return 0
 }

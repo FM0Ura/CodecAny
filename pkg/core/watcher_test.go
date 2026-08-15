@@ -85,6 +85,79 @@ func TestScanSkipsAlreadyPromoted(t *testing.T) {
 	}
 }
 
+// TestDiscoverFilesFiltersAndRecurses exercita a versão "one-shot" de varredura
+// usada pelo modo -health-check standalone (Fase 5): mesma lista de extensões
+// suportadas e mesma lógica de sufixo parcial/temporário de isSupported, sem
+// depender de fsnotify/callbacks/instância de Watcher, e recursiva em
+// subdiretórios.
+func TestDiscoverFilesFiltersAndRecurses(t *testing.T) {
+	dir := t.TempDir()
+	ok := filepath.Join(dir, "a.mkv")
+	writeFileSize(t, ok, 1000)
+	notMedia := filepath.Join(dir, "readme.txt")
+	writeFileSize(t, notMedia, 10)
+	// "b.mkv.part" tem base de mídia (b.mkv) com sufixo parcial/temporário:
+	// isSupported trata como suportado (cópia em andamento de um arquivo de
+	// mídia) — DiscoverFiles precisa espelhar exatamente essa lógica.
+	partialWithMediaBase := filepath.Join(dir, "b.mkv.part")
+	writeFileSize(t, partialWithMediaBase, 500)
+	// "notes.part" não tem base de mídia: deve ser ignorado.
+	partialWithoutMediaBase := filepath.Join(dir, "notes.part")
+	writeFileSize(t, partialWithoutMediaBase, 500)
+
+	sub := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(sub, "c.mp4")
+	writeFileSize(t, nested, 2000)
+
+	got, err := DiscoverFiles([]string{dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := map[string]bool{ok: true, nested: true, partialWithMediaBase: true}
+	if len(got) != len(want) {
+		t.Fatalf("esperava %d arquivos, obteve %d: %v", len(want), len(got), got)
+	}
+	for _, f := range got {
+		if !want[f] {
+			t.Errorf("DiscoverFiles retornou arquivo inesperado: %s", f)
+		}
+	}
+}
+
+// TestDiscoverFilesMultipleDirs confirma que múltiplos diretórios são
+// varridos e seus resultados combinados.
+func TestDiscoverFilesMultipleDirs(t *testing.T) {
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+	a := filepath.Join(dirA, "a.mkv")
+	writeFileSize(t, a, 1000)
+	b := filepath.Join(dirB, "b.avi")
+	writeFileSize(t, b, 1000)
+
+	got, err := DiscoverFiles([]string{dirA, dirB})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("esperava 2 arquivos, obteve %d: %v", len(got), got)
+	}
+}
+
+// TestIsSupportedMediaWrapper garante que o wrapper exportado espelha
+// isSupported sem alterar o comportamento.
+func TestIsSupportedMediaWrapper(t *testing.T) {
+	if !IsSupportedMedia("movie.mkv") {
+		t.Error("IsSupportedMedia(movie.mkv) deveria ser true")
+	}
+	if IsSupportedMedia("notes.txt") {
+		t.Error("IsSupportedMedia(notes.txt) deveria ser false")
+	}
+}
+
 func TestScanCoversNewSubdir(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {

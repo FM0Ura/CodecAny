@@ -256,6 +256,41 @@ func isSupported(path string) bool {
 	return false
 }
 
+// IsSupportedMedia expõe isSupported para consumidores fora do pacote (ex.:
+// cmd/cli, no modo -health-check standalone), sem alterar a lógica interna
+// já usada por scan()/run().
+func IsSupportedMedia(path string) bool {
+	return isSupported(path)
+}
+
+// DiscoverFiles varre recursivamente cada diretório de dirs e retorna todos
+// os arquivos cuja extensão é suportada (mesmo filtro de isSupported usado
+// pelo watcher em tempo real), em uma única passada "one-shot" — não depende
+// de fsnotify, callbacks ou de uma instância de Watcher. Usado pelo modo
+// -health-check standalone (cmd/cli) para descobrir arquivos sem monitorar
+// diretórios continuamente.
+func DiscoverFiles(dirs []string) ([]string, error) {
+	var files []string
+	for _, root := range dirs {
+		err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				return nil
+			}
+			if isSupported(path) {
+				files = append(files, path)
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	return files, nil
+}
+
 func fileSize(path string) (int64, error) {
 	fi, err := os.Stat(path)
 	if err != nil {
