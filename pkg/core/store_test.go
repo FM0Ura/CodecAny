@@ -204,3 +204,84 @@ func TestStoreFindByIDAndListByStatus(t *testing.T) {
 		t.Fatalf("esperava só job-b em QUEUED, obteve %+v", queued)
 	}
 }
+
+// TestListJobsFiltersByStatusAndSince exercita o histórico filtrável (Fase
+// 6): ListJobs precisa combinar status e janela de tempo (Since) num WHERE
+// dinâmico, sem exigir que o chamador informe todos os critérios. Os
+// timestamps são manipulados diretamente via Job.CreatedAt antes de
+// CreateJob (mesma técnica usada em TestStoreFindByIDAndListByStatus) —
+// evita depender de UPDATE SQL cru para simular jobs "antigos".
+func TestListJobsFiltersByStatusAndSince(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	now := time.Now()
+	// jobOld: COMPLETED, criado há 48h (fora da janela -since=24h).
+	jobOld := &Job{ID: "job-old", Path: "old.mkv", Status: StatusCompleted, Driver: "ffmpeg",
+		CreatedAt: now.Add(-48 * time.Hour)}
+	// jobRecentCompleted: COMPLETED, criado há 1h (dentro da janela).
+	jobRecentCompleted := &Job{ID: "job-recent-completed", Path: "recent-ok.mkv", Status: StatusCompleted, Driver: "ffmpeg",
+		CreatedAt: now.Add(-1 * time.Hour)}
+	// jobRecentFailed: FAILED, criado há 1h (dentro da janela, status diferente).
+	jobRecentFailed := &Job{ID: "job-recent-failed", Path: "recent-fail.mkv", Status: StatusFailed, Driver: "ffmpeg",
+		CreatedAt: now.Add(-1 * time.Hour)}
+	for _, j := range []*Job{jobOld, jobRecentCompleted, jobRecentFailed} {
+		if err := store.CreateJob(j); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Sem filtro: retorna todos, em created_at DESC (mais recente primeiro).
+	all, err := store.ListJobs(JobFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("esperava 3 jobs sem filtro, obteve %d: %+v", len(all), all)
+	}
+	if all[0].ID == jobOld.ID {
+		t.Errorf("esperava ordem created_at DESC (mais recente primeiro); job mais antigo veio primeiro: %+v", all)
+	}
+
+	// Filtro só por status: só os COMPLETED (jobOld + jobRecentCompleted).
+	byStatus, err := store.ListJobs(JobFilter{Status: StatusCompleted})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byStatus) != 2 {
+		t.Fatalf("esperava 2 jobs COMPLETED, obteve %d: %+v", len(byStatus), byStatus)
+	}
+	for _, j := range byStatus {
+		if j.Status != StatusCompleted {
+			t.Errorf("job %s com status inesperado %v", j.ID, j.Status)
+		}
+	}
+
+	// Filtro só por since (últimas 24h): exclui jobOld, mantém os dois recentes.
+	since := now.Add(-24 * time.Hour)
+	bySince, err := store.ListJobs(JobFilter{Since: &since})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bySince) != 2 {
+		t.Fatalf("esperava 2 jobs nas últimas 24h, obteve %d: %+v", len(bySince), bySince)
+	}
+	for _, j := range bySince {
+		if j.ID == jobOld.ID {
+			t.Errorf("jobOld não deveria aparecer no filtro since=24h: %+v", bySince)
+		}
+	}
+
+	// Filtro combinado (status=COMPLETED + since=24h): só jobRecentCompleted.
+	combined, err := store.ListJobs(JobFilter{Status: StatusCompleted, Since: &since})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(combined) != 1 || combined[0].ID != jobRecentCompleted.ID {
+		t.Fatalf("esperava só job-recent-completed no filtro combinado, obteve %+v", combined)
+	}
+}

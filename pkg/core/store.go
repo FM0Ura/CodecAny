@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -246,6 +247,58 @@ func (s *Store) ListByStatus(status JobStatus) ([]*Job, error) {
 	rows, err := s.db.Query(
 		`SELECT `+jobColumns+` FROM jobs WHERE status=? ORDER BY created_at ASC`, status,
 	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var jobs []*Job
+	for rows.Next() {
+		j, err := scanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, j)
+	}
+	return jobs, rows.Err()
+}
+
+// JobFilter descreve os critérios opcionais de ListJobs (Fase 6 — histórico
+// filtrável). Um campo com valor zero (Status=="" / Since,Until==nil) não
+// entra na cláusula WHERE — filtro vazio retorna todos os jobs. Until existe
+// para completude do filtro (simetria com Since), mas por ora não tem flag
+// de CLI dedicada; fica disponível para uso programático/futuro.
+type JobFilter struct {
+	Status JobStatus
+	Since  *time.Time
+	Until  *time.Time
+}
+
+// ListJobs lista Jobs de acordo com filter, em ordem de criação (created_at
+// DESC — histórico mais recente primeiro, ao contrário do FIFO de
+// ListByStatus que serve fila de processamento). Monta o WHERE dinamicamente
+// para não obrigar o chamador a fornecer todos os critérios.
+func (s *Store) ListJobs(filter JobFilter) ([]*Job, error) {
+	query := `SELECT ` + jobColumns + ` FROM jobs`
+	var conds []string
+	var args []interface{}
+	if filter.Status != "" {
+		conds = append(conds, "status=?")
+		args = append(args, filter.Status)
+	}
+	if filter.Since != nil {
+		conds = append(conds, "created_at>=?")
+		args = append(args, filter.Since.UTC().Format(time.RFC3339))
+	}
+	if filter.Until != nil {
+		conds = append(conds, "created_at<=?")
+		args = append(args, filter.Until.UTC().Format(time.RFC3339))
+	}
+	if len(conds) > 0 {
+		query += " WHERE " + strings.Join(conds, " AND ")
+	}
+	query += " ORDER BY created_at DESC"
+
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}

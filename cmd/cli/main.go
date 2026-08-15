@@ -34,25 +34,40 @@ func main() {
 	flag.Var(&dirs, "dir", "diretório a monitorar (repita para vários)")
 	flag.Var(&files, "file", "arquivo específico a processar uma vez (repita para vários)")
 
-	// Comandos administrativos de staging/aprovação (Fase 1 do v1.2): não
-	// sobem worker/watcher, só consultam/alteram o Store existente. Ver
-	// runManagementCommand.
+	// Comandos administrativos de staging/aprovação (Fase 1 do v1.2) e de
+	// histórico filtrável (-history, Fase 6): não sobem worker/watcher, só
+	// consultam/alteram o Store existente. Ver runManagementCommand.
 	listStaged := flag.Bool("list-staged", false, "lista jobs aguardando aprovação manual e sai")
 	approveID := flag.String("approve", "", "aprova o job com o ID informado e sai")
 	approveAll := flag.Bool("approve-all", false, "aprova todos os jobs aguardando aprovação e sai")
 	rejectID := flag.String("reject", "", "rejeita o job com o ID informado e sai")
 	rejectAll := flag.Bool("reject-all", false, "rejeita todos os jobs aguardando aprovação e sai")
+
+	// -history (Fase 6): relatório filtrável do histórico de jobs, mesmo
+	// dispatcher administrativo da Fase 1 (não sobe worker/watcher).
+	history := flag.Bool("history", false, "lista o histórico de jobs (com -status/-since) e sai")
+	historyStatus := flag.String("status", "", "filtra -history por status (ex.: COMPLETED, FAILED)")
+	historySince := flag.String("since", "", "filtra -history por janela de tempo (ex.: 24h, 30m)")
 	flag.Parse()
 
-	if *listStaged || *approveID != "" || *approveAll || *rejectID != "" || *rejectAll {
+	if *listStaged || *approveID != "" || *approveAll || *rejectID != "" || *rejectAll || *history {
+		if *history && *historySince != "" {
+			if _, err := time.ParseDuration(*historySince); err != nil {
+				fmt.Fprintln(os.Stderr, "erro: -since inválido:", err)
+				os.Exit(2)
+			}
+		}
 		os.Exit(runManagementCommand(managementArgs{
-			storePath:  *store,
-			rulesPath:  *rules,
-			listStaged: *listStaged,
-			approveID:  *approveID,
-			approveAll: *approveAll,
-			rejectID:   *rejectID,
-			rejectAll:  *rejectAll,
+			storePath:     *store,
+			rulesPath:     *rules,
+			listStaged:    *listStaged,
+			approveID:     *approveID,
+			approveAll:    *approveAll,
+			rejectID:      *rejectID,
+			rejectAll:     *rejectAll,
+			history:       *history,
+			historyStatus: *historyStatus,
+			historySince:  *historySince,
 		}, os.Stdout))
 	}
 
@@ -299,7 +314,8 @@ func humanBytes(n int64) string {
 }
 
 // managementArgs agrupa os parâmetros dos comandos administrativos de
-// staging/aprovação (-list-staged/-approve/-approve-all/-reject/-reject-all).
+// staging/aprovação (-list-staged/-approve/-approve-all/-reject/-reject-all)
+// e do histórico filtrável de jobs (-history, Fase 6).
 type managementArgs struct {
 	storePath  string
 	rulesPath  string
@@ -308,6 +324,10 @@ type managementArgs struct {
 	approveAll bool
 	rejectID   string
 	rejectAll  bool
+
+	history       bool
+	historyStatus string
+	historySince  string
 }
 
 // runManagementCommand executa um subcomando administrativo e retorna o exit
@@ -334,6 +354,8 @@ func runManagementCommand(a managementArgs, out io.Writer) int {
 		return cmdReject(eng, a.rejectID, out)
 	case a.rejectAll:
 		return cmdRejectAll(eng, out)
+	case a.history:
+		return cmdHistory(eng, a.historyStatus, a.historySince, out)
 	}
 	return 0
 }
@@ -392,6 +414,60 @@ func cmdRejectAll(eng *core.Engine, out io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// cmdHistory lista o histórico de jobs filtrado por status/since (Fase 6).
+// status é comparado livremente contra core.JobStatus (sem validação contra
+// uma lista fechada de valores — um status inexistente simplesmente não bate
+// com nenhum job e retorna lista vazia, mesma tolerância de FindByPath/etc.
+// para strings vindas do usuário). since usa o mesmo padrão de -scan-interval
+// (time.ParseDuration), convertido para Since=time.Now().Add(-duração).
+func cmdHistory(eng *core.Engine, status, since string, out io.Writer) int {
+	filter := core.JobFilter{}
+	if status != "" {
+		filter.Status = core.JobStatus(status)
+	}
+	if since != "" {
+		d, err := time.ParseDuration(since)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "erro: -since inválido:", err)
+			return 1
+		}
+		t := time.Now().Add(-d)
+		filter.Since = &t
+	}
+	jobs, err := eng.ListJobs(filter)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "erro ao listar histórico:", err)
+		return 1
+	}
+	if len(jobs) == 0 {
+		fmt.Fprintln(out, "nenhum job encontrado para o filtro informado")
+		return 0
+	}
+	formatHistoryTable(jobs, out)
+	return 0
+}
+
+// formatHistoryTable imprime a tabela do histórico de jobs (-history, Fase
+// 6): ID/Arquivo/Status/Original/Convertido/Economia/Finalizado em — mesmo
+// estilo visual de formatStagedTable, com a coluna extra de Status (o
+// histórico mistura jobs em vários estados finais) e Finalizado em (quando
+// FinishedAt existe; jobs ainda em andamento mostram "-").
+func formatHistoryTable(jobs []*core.Job, w io.Writer) {
+	fmt.Fprintf(w, "%-10s %-30s %-12s %-10s %-12s %-10s %s\n",
+		"ID", "Arquivo", "Status", "Original", "Convertido", "Economia", "Finalizado em")
+	for _, j := range jobs {
+		m := j.SizeMetrics
+		economia := fmt.Sprintf("%.2f%%", m.CompressionRatioPct)
+		finalizado := "-"
+		if j.FinishedAt != nil {
+			finalizado = j.FinishedAt.Local().Format("2006-01-02 15:04:05")
+		}
+		fmt.Fprintf(w, "%-10s %-30s %-12s %-10s %-12s %-10s %s\n",
+			shortID(j.ID), filepath.Base(j.Path), string(j.Status),
+			humanBytes(m.OriginalSizeBytes), humanBytes(m.ConvertedSizeBytes), economia, finalizado)
+	}
 }
 
 // formatStagedTable imprime a tabela de jobs aguardando aprovação no formato

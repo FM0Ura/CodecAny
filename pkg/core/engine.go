@@ -473,6 +473,13 @@ func (e *Engine) ListStaged() ([]*Job, error) {
 	return e.store.ListByStatus(StatusAwaitingApproval)
 }
 
+// ListJobs expõe Store.ListJobs ao chamador do Engine (CLI -history, Fase 6).
+// store é campo não-exportado do Engine — este wrapper fino é o único jeito
+// do cmd/cli consultar o histórico filtrável sem acessar o Store diretamente.
+func (e *Engine) ListJobs(filter JobFilter) ([]*Job, error) {
+	return e.store.ListJobs(filter)
+}
+
 // ApproveAll aprova todos os jobs aguardando aprovação. Retorna quantos foram
 // aprovados com sucesso e a lista de erros encontrados (um job com falha não
 // interrompe o processamento dos demais).
