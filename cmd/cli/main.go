@@ -62,11 +62,12 @@ func main() {
 	eng.SetScanInterval(scanEvery)
 
 	if len(files) > 0 {
-		if err := eng.RunOnce(context.Background(), files); err != nil {
-			logger.Fatal(log, err)
-		}
+		runErr := eng.RunOnce(context.Background(), files)
 		printSavingsReport(eng, log)
 		eng.Shutdown()
+		if runErr != nil {
+			logger.Fatal(log, runErr)
+		}
 		return
 	}
 
