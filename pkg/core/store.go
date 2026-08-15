@@ -30,6 +30,17 @@ func NewStore(path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("abrir sqlite: %w", err)
 	}
+	// PRAGMA busy_timeout é uma configuração POR CONEXÃO (não persiste no
+	// arquivo do banco, ao contrário de journal_mode). Se o pool do
+	// database/sql abrisse mais de uma conexão física (comportamento padrão
+	// sob concorrência), qualquer conexão nova nunca receberia esse PRAGMA e
+	// falharia imediatamente com SQLITE_BUSY em vez de esperar — foi
+	// exatamente esse sintoma que expôs o bug ao adicionar a reivindicação
+	// atômica em NextPendingJob (múltiplos workers concorrentes). Limitar a
+	// 1 conexão garante que o PRAGMA setado abaixo sempre se aplica, e é
+	// seguro para SQLite (que só suporta um writer por vez de qualquer
+	// forma) sem exigir um pool/servidor — coerente com o binário único.
+	db.SetMaxOpenConns(1)
 	if _, err := db.Exec(`PRAGMA journal_mode=WAL;`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("ativar WAL: %w", err)
@@ -162,17 +173,58 @@ func (s *Store) GetTotalSavings() (SizeMetrics, error) {
 	return m, nil
 }
 
-// NextPendingJob retorna o próximo Job aguardando processamento, por prioridade
-// (maior prioridade primeiro) e em ordem de criação (FIFO como desempate).
+// maxClaimRetries limita as tentativas de NextPendingJob ao perder a corrida
+// de reivindicação para outro worker (ver comentário em NextPendingJob).
+// Um valor alto o bastante para nunca ser atingido em uso normal (mesmo com
+// dezenas de workers competindo), só existe para não girar indefinidamente
+// num cenário patológico.
+const maxClaimRetries = 50
+
+// NextPendingJob reivindica atomicamente o próximo Job aguardando
+// processamento, por prioridade (maior prioridade primeiro) e em ordem de
+// criação (FIFO como desempate).
+//
+// A reivindicação é feita em duas etapas (SELECT do candidato + UPDATE
+// condicional "WHERE id=? AND status=StatusQueued") em vez de um SELECT
+// simples seguido de UpdateStatus incondicional (como era antes): com
+// -workers>1, dois workers podiam ler o MESMO job como QUEUED antes de
+// qualquer um marcar IN_PROGRESS, processando o mesmo arquivo em duplicidade.
+// O UPDATE condicional garante que só o worker cujo UPDATE realmente mudou
+// uma linha (RowsAffected==1) "venceu" a reivindicação; quem perde tenta de
+// novo (outro worker já pode ter avançado a fila, ou o job pode ter sumido
+// da lista de QUEUED por outro motivo), sem duplo-processamento.
 func (s *Store) NextPendingJob() (*Job, error) {
-	row := s.db.QueryRow(
-		`SELECT `+jobColumns+`
-		 FROM jobs
-		 WHERE status = ?
-		 ORDER BY priority DESC, created_at ASC
-		 LIMIT 1`, StatusQueued,
-	)
-	return scanJob(row)
+	for attempt := 0; attempt < maxClaimRetries; attempt++ {
+		row := s.db.QueryRow(
+			`SELECT `+jobColumns+`
+			 FROM jobs
+			 WHERE status = ?
+			 ORDER BY priority DESC, created_at ASC
+			 LIMIT 1`, StatusQueued,
+		)
+		job, err := scanJob(row)
+		if err != nil || job == nil {
+			return job, err
+		}
+		res, err := s.db.Exec(
+			`UPDATE jobs SET status=? WHERE id=? AND status=?`,
+			StatusInProgress, job.ID, StatusQueued,
+		)
+		if err != nil {
+			return nil, err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return nil, err
+		}
+		if n == 1 {
+			job.Status = StatusInProgress
+			return job, nil
+		}
+		// Outro worker reivindicou este job entre o SELECT e o UPDATE — tenta
+		// de novo (não é erro, é a corrida esperada em -workers>1).
+	}
+	return nil, fmt.Errorf("NextPendingJob: %d tentativas de reivindicação sem sucesso", maxClaimRetries)
 }
 
 // ClaimPendingMarks marca todos os Jobs QUEUED como IN_PROGRESS para orquestração.

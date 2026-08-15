@@ -1,7 +1,9 @@
 package core
 
 import (
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -283,5 +285,71 @@ func TestListJobsFiltersByStatusAndSince(t *testing.T) {
 	}
 	if len(combined) != 1 || combined[0].ID != jobRecentCompleted.ID {
 		t.Fatalf("esperava só job-recent-completed no filtro combinado, obteve %+v", combined)
+	}
+}
+
+// TestNextPendingJobConcurrentClaimsAreExclusive é o teste de regressão da
+// race pré-existente em NextPendingJob: antes da reivindicação atômica
+// (SELECT + UPDATE condicional "WHERE status=QUEUED"), dois workers
+// concorrentes podiam ler o MESMO job como QUEUED antes de qualquer um
+// marcar IN_PROGRESS, processando o mesmo arquivo em duplicidade com
+// -workers>1. Dispara vários workers concorrentes reivindicando a mesma
+// fila e confirma que cada job é entregue a exatamente um chamador.
+func TestNextPendingJobConcurrentClaimsAreExclusive(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	const totalJobs = 30
+	now := time.Now()
+	for i := 0; i < totalJobs; i++ {
+		job := &Job{
+			ID:        fmt.Sprintf("job-%02d", i),
+			Path:      fmt.Sprintf("f%02d.mkv", i),
+			Status:    StatusQueued,
+			Driver:    "ffmpeg",
+			CreatedAt: now.Add(time.Duration(i) * time.Millisecond),
+		}
+		if err := store.CreateJob(job); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	const concurrentWorkers = 8
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	claimedCount := make(map[string]int) // job ID -> nº de vezes que algum worker o recebeu
+
+	for w := 0; w < concurrentWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				job, err := store.NextPendingJob()
+				if err != nil {
+					t.Errorf("NextPendingJob: %v", err)
+					return
+				}
+				if job == nil {
+					return // fila esgotada: como só depletamos (nada re-enfileira), pode encerrar
+				}
+				mu.Lock()
+				claimedCount[job.ID]++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	if len(claimedCount) != totalJobs {
+		t.Fatalf("esperava %d jobs distintos reivindicados no total, obteve %d: %v", totalJobs, len(claimedCount), claimedCount)
+	}
+	for id, count := range claimedCount {
+		if count != 1 {
+			t.Errorf("job %s foi reivindicado %d vez(es) por workers concorrentes (esperado exatamente 1) — regressão da race de duplo-processamento", id, count)
+		}
 	}
 }
