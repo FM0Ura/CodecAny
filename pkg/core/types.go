@@ -18,17 +18,17 @@ const (
 
 // MediaInfo carrega os metadados técnicos extraídos pelo MediaProber (RF02).
 type MediaInfo struct {
-	Path         string   `json:"path"`
-	Container    string   `json:"container"`
-	VideoCodec   string   `json:"video_codec"`
-	VideoBitrate int64    `json:"video_bitrate"`
-	Width        int      `json:"width"`
-	Height       int      `json:"height"`
-	AudioCodecs  []string `json:"audio_codecs"`
-	SubtitlePaths []string `json:"subtitle_dirs"`
-	HasVideo     bool     `json:"has_video"`
-	HasAudio     bool     `json:"has_audio"`
-	DurationSec  float64  `json:"duration_sec"`
+	Path          string   `json:"path"`
+	Container     string   `json:"container"`
+	VideoCodec    string   `json:"video_codec"`
+	VideoBitrate  int64    `json:"video_bitrate"`
+	Width         int      `json:"width"`
+	Height        int      `json:"height"`
+	AudioCodecs   []string `json:"audio_codecs"`
+	SubtitlePaths []string `json:"subtitle_paths"`
+	HasVideo      bool     `json:"has_video"`
+	HasAudio      bool     `json:"has_audio"`
+	DurationSec   float64  `json:"duration_sec"`
 }
 
 // TargetSpec descreve o alvo de conversão extraído das regras (RF03).
