@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -511,6 +512,172 @@ func TestEngineApproveJobFromFreshEngineInstance(t *testing.T) {
 	if got.Status != StatusCompleted {
 		t.Errorf("status esperado COMPLETED, obteve %v", got.Status)
 	}
+}
+
+// setupHWAccelEngine monta um engine com um controllableTranscoder registrado
+// sob o driver "mock" e dois jobs QUEUED persistidos (movieA/movieB), prontos
+// para serem disparados diretamente via e.runJob (em vez de OpenWorkers) —
+// isso evita depender do pool de workers/fila (Store.NextPendingJob hoje é um
+// SELECT simples sem claim atômico; disparar via workerLoop com Workers>1
+// arrisca duas goroutines pegarem o mesmo job QUEUED, o que é uma
+// pré-existência fora do escopo desta fase e só tornaria o teste flaky).
+// Chamar runJob diretamente com dois *Job distintos testa exatamente a lógica
+// do semáforo de hwaccel de forma determinística.
+func setupHWAccelEngine(t *testing.T, rulesYAML string) (eng *Engine, ct *controllableTranscoder, jobA, jobB *Job) {
+	t.Helper()
+	base := t.TempDir()
+	stage := filepath.Join(base, "staging")
+	mediaA := filepath.Join(base, "movieA.mkv")
+	mediaB := filepath.Join(base, "movieB.mkv")
+	writeFileSize(t, mediaA, 1000)
+	writeFileSize(t, mediaB, 1000)
+
+	rulesPath := writeRules(t, strings.ReplaceAll(rulesYAML, "__STAGE__", stage))
+
+	store, err := NewStore(filepath.Join(base, "codecany.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	re, err := NewRulesEngine(rulesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ct = &controllableTranscoder{
+		outputSize:    500,
+		release:       make(chan struct{}),
+		startedNotify: make(chan struct{}, 2),
+	}
+	events := make(chan JobEvent, 64)
+	eng, err = NewEngine(EngineDeps{
+		Store:   store,
+		Rules:   re,
+		Prober:  mockProber{info: MediaInfo{Container: "mkv", VideoCodec: "h264"}},
+		Engines: []TranscoderEngine{ct},
+		Workers: 2,
+		Events:  events,
+		Logger:  slog.New(slog.NewTextHandler(os.Stderr, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !eng.HandleDiscovered(mediaA) {
+		t.Fatal("esperava job A enfileirado")
+	}
+	if !eng.HandleDiscovered(mediaB) {
+		t.Fatal("esperava job B enfileirado")
+	}
+	jobA, err = store.FindByPath(mediaA)
+	if err != nil || jobA == nil {
+		t.Fatalf("esperava job A persistido: %v", err)
+	}
+	jobB, err = store.FindByPath(mediaB)
+	if err != nil || jobB == nil {
+		t.Fatalf("esperava job B persistido: %v", err)
+	}
+	return eng, ct, jobA, jobB
+}
+
+// TestEngineHWAccelLimitBlocksConcurrentTranscodes prova que
+// global.hwaccel_limits realmente serializa transcodificações concorrentes
+// que usam o mesmo vendor de hwaccel: com o limite configurado em 1, um
+// segundo job só chama Transcode() depois que o primeiro libera o slot do
+// semáforo (fim do loop de progresso em runJob).
+func TestEngineHWAccelLimitBlocksConcurrentTranscodes(t *testing.T) {
+	eng, ct, jobA, jobB := setupHWAccelEngine(t, "version: 1\nglobal:\n  default_driver: mock\n  staging_dir: __STAGE__\n  space_saving:\n    min_saving_pct: 15\n  hwaccel_limits:\n    mock: 1\n  defaults:\n    video: { codec: hevc }\n    auto_approve: true\nrules:\n  - name: r\n    convert:\n      video: { codec: hevc, hwaccel: mock }\n")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	doneA := make(chan struct{})
+	doneB := make(chan struct{})
+	go func() { defer close(doneA); eng.runJob(ctx, jobA) }()
+	go func() { defer close(doneB); eng.runJob(ctx, jobB) }()
+
+	// Um dos dois jobs entra em Transcode primeiro.
+	select {
+	case <-ct.startedNotify:
+	case <-time.After(2 * time.Second):
+		t.Fatal("nenhum job chamou Transcode dentro do tempo limite")
+	}
+
+	// O outro NÃO deve chamar Transcode enquanto o primeiro segura o único
+	// slot do semáforo (hwaccel_limits: {mock: 1}).
+	select {
+	case <-ct.startedNotify:
+		t.Fatal("segundo job chamou Transcode antes do primeiro liberar o slot de hwaccel")
+	case <-time.After(300 * time.Millisecond):
+		// esperado: nada chegou ainda
+	}
+
+	// Libera o primeiro job (fecha seu canal de progresso) — o slot do
+	// semáforo é liberado assim que o loop de progresso de runJob termina,
+	// não depois de TESTING/Commit.
+	select {
+	case ct.release <- struct{}{}:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout ao liberar o primeiro job")
+	}
+
+	// Agora o segundo job deve conseguir adquirir o slot e chamar Transcode.
+	select {
+	case <-ct.startedNotify:
+	case <-time.After(2 * time.Second):
+		t.Fatal("segundo job não chamou Transcode após o primeiro liberar o slot de hwaccel")
+	}
+
+	// Libera o segundo job para os dois runJob concluírem.
+	select {
+	case ct.release <- struct{}{}:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout ao liberar o segundo job")
+	}
+
+	<-doneA
+	<-doneB
+}
+
+// TestEngineNoHWAccelLimitAllowsConcurrentTranscodes confirma que uma regra
+// SEM hwaccel configurado (ou sem limite correspondente em
+// global.hwaccel_limits) não é afetada por nenhum semáforo — comportamento
+// idêntico ao anterior à Fase 4: os dois jobs concorrentes chamam Transcode
+// livremente, sem que um precise esperar o outro liberar.
+func TestEngineNoHWAccelLimitAllowsConcurrentTranscodes(t *testing.T) {
+	// Sem hwaccel na regra e sem hwaccel_limits configurado.
+	eng, ct, jobA, jobB := setupHWAccelEngine(t, "version: 1\nglobal:\n  default_driver: mock\n  staging_dir: __STAGE__\n  space_saving:\n    min_saving_pct: 15\n  defaults:\n    video: { codec: hevc }\n    auto_approve: true\nrules:\n  - name: r\n    convert:\n      video: { codec: hevc }\n")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	doneA := make(chan struct{})
+	doneB := make(chan struct{})
+	go func() { defer close(doneA); eng.runJob(ctx, jobA) }()
+	go func() { defer close(doneB); eng.runJob(ctx, jobB) }()
+
+	// Ambos os jobs devem conseguir chamar Transcode concorrentemente, sem
+	// que um precise esperar o outro liberar (nenhum semáforo em jogo).
+	for i := 0; i < 2; i++ {
+		select {
+		case <-ct.startedNotify:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("job %d não chamou Transcode dentro do tempo limite (deveria rodar livremente sem limite de hwaccel)", i)
+		}
+	}
+
+	// Libera ambos para os runJob concluírem.
+	for i := 0; i < 2; i++ {
+		select {
+		case ct.release <- struct{}{}:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timeout ao liberar job %d", i)
+		}
+	}
+
+	<-doneA
+	<-doneB
 }
 
 func TestEngineWebhooks(t *testing.T) {

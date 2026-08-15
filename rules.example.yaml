@@ -17,6 +17,18 @@ global:
     min_saving_pct: 15
     fallback_action: rollback
 
+  # hwaccel_limits (v1.2): limita quantas transcodificações usando um dado
+  # vendor de hwaccel podem rodar simultaneamente, independente do número de
+  # -workers configurado — evita estourar sessões simultâneas de hardware
+  # (ex.: GPUs consumer tipicamente limitam sessões NVENC a 2-3). A chave
+  # deve ser EXATAMENTE o mesmo valor literal usado em `convert.video.hwaccel`
+  # (ou `defaults.video.hwaccel`) nas regras abaixo — sem normalização de
+  # alias (ex.: "nvenc" e "cuda" são chaves distintas). Vendors ausentes deste
+  # bloco (ou regras sem `hwaccel`) não são limitados, seguem só -workers.
+  # hwaccel_limits:
+  #   nvenc: 2
+  #   vaapi: 1
+
   # Defaults aplicados quando a regra não os especificar.
   defaults:
     video:

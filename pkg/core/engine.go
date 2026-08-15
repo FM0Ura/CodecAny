@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,6 +31,13 @@ type Engine struct {
 	closeOnce sync.Once
 	webhook   *WebhookClient
 	webhookWG sync.WaitGroup
+
+	// hwSemaphores limita transcodificações concorrentes por vendor de
+	// hwaccel (ex. "nvenc", "vaapi"), independente do pool de -workers.
+	// Construído em NewEngine a partir de global.hwaccel_limits; vendors
+	// ausentes (ou sem limite configurado) não têm entrada aqui e portanto
+	// não são limitados. Ver hwSemaphore/runJob.
+	hwSemaphores map[string]chan struct{}
 }
 
 // EngineDeps agrupa as dependências para criar um Engine.
@@ -56,21 +64,48 @@ func NewEngine(d EngineDeps) (*Engine, error) {
 	for _, e := range d.Engines {
 		em[e.Name()] = e
 	}
+	// hwSemaphores: um chan struct{} bufferizado por vendor de hwaccel com
+	// limite > 0 configurado em global.hwaccel_limits. A chave é
+	// strings.ToLower(vendor) EXATO, sem normalização de alias (ex.: "nvenc"
+	// e "cuda" permanecem chaves distintas) — resolver aliases exigiria
+	// importar pkg/adapters/ffmpeg aqui, invertendo a dependência core→adapter
+	// que hoje só existe via as interfaces de interfaces.go. Por isso
+	// `global.hwaccel_limits` deve usar exatamente o mesmo valor literal
+	// configurado em convert.video.hwaccel/defaults.video.hwaccel nas regras.
+	hwSemaphores := make(map[string]chan struct{})
+	for vendor, limit := range d.Rules.Global().HWAccelLimits {
+		if limit <= 0 {
+			continue
+		}
+		hwSemaphores[strings.ToLower(vendor)] = make(chan struct{}, limit)
+	}
 	return &Engine{
-		store:     d.Store,
-		rules:     d.Rules,
-		prober:    d.Prober,
-		verifier:  d.Verifier,
-		engines:   em,
-		workers:   d.Workers,
-		events:    d.Events,
-		staging:   d.Rules.Global().StagingDir,
-		integrity: NewIntegrityCheck(d.Rules.Global().SpaceSaving.MinSavingPct),
-		log:       d.Logger,
-		scanEvery: defaultScanInterval,
-		cancelled: make(chan struct{}),
-		webhook:   NewWebhookClient(d.Rules.Global().Notifications),
+		store:        d.Store,
+		rules:        d.Rules,
+		prober:       d.Prober,
+		verifier:     d.Verifier,
+		engines:      em,
+		workers:      d.Workers,
+		events:       d.Events,
+		staging:      d.Rules.Global().StagingDir,
+		integrity:    NewIntegrityCheck(d.Rules.Global().SpaceSaving.MinSavingPct),
+		log:          d.Logger,
+		scanEvery:    defaultScanInterval,
+		cancelled:    make(chan struct{}),
+		webhook:      NewWebhookClient(d.Rules.Global().Notifications),
+		hwSemaphores: hwSemaphores,
 	}, nil
+}
+
+// hwSemaphore retorna o semáforo configurado para o vendor de hwaccel do
+// job (via global.hwaccel_limits), ou nil se o alvo não usa hwaccel ou não
+// há limite configurado para esse vendor específico — nesses casos o job
+// segue usando só o pool global de -workers, sem nenhuma restrição extra.
+func (e *Engine) hwSemaphore(vendor string) chan struct{} {
+	if vendor == "" || e.hwSemaphores == nil {
+		return nil
+	}
+	return e.hwSemaphores[strings.ToLower(vendor)]
 }
 
 // Events returns o canal de eventos nativos (RF06, RI02).
@@ -267,6 +302,27 @@ func (e *Engine) runJob(ctx context.Context, job *Job) {
 		return
 	}
 
+	// Limite de concorrência por hwaccel (opcional, ver global.hwaccel_limits):
+	// adquire um slot antes de iniciar o processo ffmpeg e libera assim que
+	// ele encerra (fim do loop de progresso), NÃO depois de TESTING/Verify/
+	// Commit — essas etapas são só CPU/IO e não ocupam sessão de hardware.
+	// release é protegida por sync.Once para poder ser chamada tanto pelo
+	// defer (cobre qualquer return a partir daqui, incluindo falha ao iniciar
+	// o Transcode e abort por cancelamento/contexto dentro do loop) quanto
+	// explicitamente logo após o loop terminar no caminho feliz, sem risco de
+	// liberar o slot duas vezes.
+	sem := e.hwSemaphore(job.Target.VideoHWAccel)
+	var releaseHWOnce sync.Once
+	releaseHW := func() {
+		if sem != nil {
+			releaseHWOnce.Do(func() { <-sem })
+		}
+	}
+	if sem != nil {
+		sem <- struct{}{}
+	}
+	defer releaseHW()
+
 	prog, err := tc.Transcode(job.Path, cl.Output(), job.MediaInfo, job.Target)
 	if err != nil {
 		cl.Abort()
@@ -295,6 +351,9 @@ loop:
 			e.emit(JobEvent{Kind: EventJobProgress, JobID: job.ID, FilePath: job.Path, Driver: job.Driver, Progress: fr})
 		}
 	}
+	// Processo ffmpeg encerrou (canal de progresso fechado): libera o slot de
+	// hwaccel já aqui, antes de TESTING/Verify/Commit.
+	releaseHW()
 
 	// TESTING
 	nowT := time.Now()

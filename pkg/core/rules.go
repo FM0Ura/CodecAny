@@ -142,6 +142,16 @@ type RuleFileGlobal struct {
 	SpaceSaving   SpaceSavingPolicy `yaml:"space_saving" json:"space_saving"`
 	Defaults      RuleDefaults      `yaml:"defaults" json:"defaults"`
 	Notifications WebhookConfig     `yaml:"notifications" json:"notifications"`
+
+	// HWAccelLimits limita quantas transcodificações usando um dado vendor de
+	// hwaccel (ex. "nvenc", "vaapi") podem rodar simultaneamente, independente
+	// do número de -workers configurado. Chave = vendor (mesmo valor literal
+	// usado em convert.video.hwaccel/defaults.video.hwaccel nas regras),
+	// valor = número máximo de sessões concorrentes. Vendors ausentes deste
+	// mapa (ou com limite <= 0) não são limitados — seguem só o pool global
+	// de workers. Ver Engine.hwSemaphores para a implementação (chan struct{}
+	// como semáforo por vendor).
+	HWAccelLimits map[string]int `yaml:"hwaccel_limits" json:"hwaccel_limits"`
 }
 
 // IgnoreRules define arquivos/dirs que jamais serão processados.
