@@ -349,3 +349,91 @@ rules:
 		t.Errorf("webhook não foi acionado pelo Engine")
 	}
 }
+
+// TestEngineUpdatesPathOnContainerChange cobre a regressão em que, após uma
+// conversão que muda o container (extensão) do arquivo, job.Path — e tudo
+// que dele deriva (JobEvent.FilePath, o registro no store, logs) — continuava
+// apontando para o caminho antigo, que deixa de existir em disco após o
+// Commit atômico do Cleanup.
+func TestEngineUpdatesPathOnContainerChange(t *testing.T) {
+	base := t.TempDir()
+	stage := filepath.Join(base, "staging")
+	mediaPath := filepath.Join(base, "movie.mp4")
+	writeFileSize(t, mediaPath, 1000)
+
+	rulesPath := writeRules(t, "version: 1\nglobal:\n  default_driver: mock\n  staging_dir: "+stage+"\n  space_saving:\n    min_saving_pct: 15\n  defaults:\n    video: { codec: hevc }\nrules:\n  - name: r\n    convert:\n      video: { codec: hevc }\n      container: mkv\n")
+
+	store, err := NewStore(filepath.Join(base, "codecany.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	re, err := NewRulesEngine(rulesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := make(chan JobEvent, 64)
+	eng, err := NewEngine(EngineDeps{
+		Store:    store,
+		Rules:    re,
+		Prober:   mockProber{info: MediaInfo{Container: "mp4", VideoCodec: "h264"}},
+		Engines:  []TranscoderEngine{&mockTranscoder{outputSize: 500}}, // 50% economia
+		Workers:  1,
+		Events:   events,
+		Logger:   slog.New(slog.NewTextHandler(os.Stderr, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	eng.HandleDiscovered(mediaPath)
+	wantPath := filepath.Join(base, "movie.mkv")
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() {
+			time.Sleep(2 * time.Second)
+			cancel()
+		}()
+		eng.OpenWorkers(ctx)
+	}()
+	evs := drainEvents(events, 3*time.Second)
+	<-done
+
+	var complete *JobEvent
+	for i, ev := range evs {
+		if ev.Kind == EventJobComplete && ev.Success {
+			complete = &evs[i]
+		}
+	}
+	if complete == nil {
+		t.Fatalf("esperava EventJobComplete success; recebidos: %+v", evs)
+	}
+	if complete.FilePath != wantPath {
+		t.Errorf("JobEvent.FilePath = %q, esperado %q (novo caminho após troca de container)", complete.FilePath, wantPath)
+	}
+
+	// Arquivo final existe com a nova extensão; o antigo (.mp4) não existe mais.
+	if _, err := os.Stat(wantPath); err != nil {
+		t.Errorf("esperava %s presente: %v", wantPath, err)
+	}
+	if _, err := os.Stat(mediaPath); !os.IsNotExist(err) {
+		t.Errorf("esperava %s ausente após troca de container, err=%v", mediaPath, err)
+	}
+
+	// O registro no store também deve refletir o novo caminho.
+	job, err := store.FindByPath(wantPath)
+	if err != nil || job == nil {
+		t.Fatalf("esperava job no store sob o novo caminho: %v", err)
+	}
+	if job.Status != StatusCompleted {
+		t.Errorf("status do job = %v, esperado %v", job.Status, StatusCompleted)
+	}
+	if stale, err := store.FindByPath(mediaPath); err == nil && stale != nil {
+		t.Errorf("não esperava registro remanescente sob o caminho antigo: %+v", stale)
+	}
+}

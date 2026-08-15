@@ -116,6 +116,15 @@ func (s *Store) UpdateStatus(id string, status JobStatus, startedAt, finishedAt 
 	return nil
 }
 
+// UpdatePath persiste um novo caminho para o Job. Usado quando o container
+// alvo muda a extensão do arquivo (Cleanup.FinalPath() difere do path
+// original) — sem isso o registro no banco ficaria apontando para um
+// arquivo que não existe mais em disco após o Commit.
+func (s *Store) UpdatePath(id, path string) error {
+	_, err := s.db.Exec(`UPDATE jobs SET path=? WHERE id=?`, path, id)
+	return err
+}
+
 // UpdateMetrics persiste as métricas de eficiência de espaço do Job (seção 7).
 func (s *Store) UpdateMetrics(id string, m SizeMetrics) error {
 	_, err := s.db.Exec(

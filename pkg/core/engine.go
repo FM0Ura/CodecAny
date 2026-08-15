@@ -339,6 +339,16 @@ loop:
 		e.fail(job, fmt.Sprintf("finalização: %v", err))
 		return
 	}
+	if fp := cl.FinalPath(); fp != job.Path {
+		// O container alvo mudou a extensão do arquivo (ex.: .mp4 → .mkv):
+		// o caminho antigo não existe mais em disco após o Commit, então
+		// job.Path (e tudo derivado dele — evento, webhook, log, registro no
+		// banco) precisa refletir o novo caminho a partir daqui.
+		if err := e.store.UpdatePath(job.ID, fp); err != nil {
+			e.log.Error("falha ao atualizar path do job", "job_id", job.ID, "error", err.Error())
+		}
+		job.Path = fp
+	}
 	e.store.UpdateMetrics(job.ID, m)
 	fin := time.Now()
 	e.store.UpdateStatus(job.ID, StatusCompleted, nil, &fin, "")
