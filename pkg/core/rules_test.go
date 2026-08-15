@@ -260,3 +260,47 @@ rules:
 		t.Errorf("esperava VideoCRF = 0 para lossless, obteve %d (sobrescreveu com default)", spec.VideoCRF)
 	}
 }
+
+func TestRulesHWAccel(t *testing.T) {
+	content := `
+version: 1
+global:
+  staging_dir: /tmp/xs
+  defaults:
+    video: { codec: hevc, crf: 22, preset: slow, hwaccel: vaapi }
+rules:
+  - name: rule_without_hwaccel
+    match:
+      container: mkv
+      video: { codec: h264 }
+    convert:
+      video: { codec: hevc }
+  - name: rule_with_specific_hwaccel
+    match:
+      container: mp4
+      video: { codec: h264 }
+    convert:
+      video: { codec: hevc, hwaccel: nvenc }
+`
+	r := mustEngine(t, content)
+
+	// Caso 1: Regra sem hwaccel específico deve herdar o global default (vaapi)
+	mi1 := MediaInfo{Container: "mkv", VideoCodec: "h264"}
+	_, spec1, err := r.Evaluate(mi1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec1.VideoHWAccel != "vaapi" {
+		t.Errorf("esperava hwaccel herdado 'vaapi', obteve %q", spec1.VideoHWAccel)
+	}
+
+	// Caso 2: Regra com hwaccel específico deve vencer o default (nvenc)
+	mi2 := MediaInfo{Container: "mp4", VideoCodec: "h264"}
+	_, spec2, err := r.Evaluate(mi2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec2.VideoHWAccel != "nvenc" {
+		t.Errorf("esperava hwaccel específico 'nvenc', obteve %q", spec2.VideoHWAccel)
+	}
+}

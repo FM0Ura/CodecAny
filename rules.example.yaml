@@ -20,9 +20,9 @@ global:
   # Defaults aplicados quando a regra não os especificar.
   defaults:
     video:
-      codec: hevc
-      crf: 20
-      preset: slow
+      codec: av1
+      crf: 28
+      preset: 5
     audio:
       codec: copy
     container: auto
@@ -31,18 +31,18 @@ global:
 # Regras (ordem importa: específica primeiro)
 # ----------------------------------------------------------
 rules:
-  # 1) H.264 em MKV → HEVC
-  - name: "MKV H264 para HEVC"
+  # 1) H.264/MJPEG em MKV → AV1
+  - name: "MKV H264/MJPEG para AV1"
     match:
       container: mkv
       video:
-        codec: h264          # aceita: h264
+        codec: [h264, mjpeg] # aceita H.264 ou MJPEG (como webcams antigas ou capas)
       audio:
         codec: [aac, ac3]    # não impeditivo: áudio divergente não bloqueia
     convert:
       video:
-        codec: hevc
-        preset: medium
+        codec: av1
+        preset: 5
       audio:
         codec: copy          # mantém áudio original (sem perda geracional)
       container: mkv
@@ -54,17 +54,19 @@ rules:
         codec: av1
     action: skip
 
-  # 3) Fallback genérico: qualquer MP4 H.264 → HEVC/MP4
-  - name: "MP4 H264 para HEVC"
+  # 3) Fallback genérico: qualquer MP4 H.264/MJPEG → AV1
+  - name: "MP4 H264/MJPEG para AV1"
     match:
       container: mp4
       video:
-        codec: h264
+        codec: [h264, mjpeg]
     convert:
       video:
-        codec: hevc
-        preset: slow
-      container: mp4
+        codec: av1
+        preset: 5
+      audio:
+        codec: copy          # mantém áudio original
+      container: mkv         # MKV é melhor para preservar legendas e metadados sem perdas
 
 # ----------------------------------------------------------
 # Ignora (nunca processa, mesmo que uma regra case)

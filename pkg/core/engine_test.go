@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -263,5 +265,87 @@ func TestEngineCompletesWithPassingVerification(t *testing.T) {
 	}
 	if !ok {
 		t.Fatalf("esperava OnJobComplete success; recebidos: %+v", evs)
+	}
+}
+
+func TestEngineWebhooks(t *testing.T) {
+	called := make(chan string, 1)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called <- r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	base := t.TempDir()
+	stage := filepath.Join(base, "staging")
+	mediaPath := filepath.Join(base, "movie.mkv")
+	writeFileSize(t, mediaPath, 1000)
+
+	// Regras com staging local e webhook configurado
+	rulesContent := `
+version: 1
+global:
+  default_driver: mock
+  staging_dir: ` + stage + `
+  space_saving:
+    min_saving_pct: 15
+  defaults:
+    video: { codec: hevc }
+  notifications:
+    webhook_url: ` + ts.URL + `
+    events: [completed]
+rules:
+  - name: r
+    convert:
+      video: { codec: hevc }
+`
+	rulesPath := writeRules(t, rulesContent)
+
+	store, err := NewStore(filepath.Join(base, "codecany.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	re, err := NewRulesEngine(rulesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := make(chan JobEvent, 64)
+	eng, err := NewEngine(EngineDeps{
+		Store:    store,
+		Rules:    re,
+		Prober:   mockProber{info: MediaInfo{Container: "mkv", VideoCodec: "h264"}},
+		Engines:  []TranscoderEngine{&mockTranscoder{outputSize: 500}}, // 50% economia
+		Workers:  1,
+		Events:   events,
+		Logger:   slog.New(slog.NewTextHandler(os.Stderr, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	eng.HandleDiscovered(mediaPath)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() {
+			time.Sleep(2 * time.Second)
+			cancel()
+		}()
+		eng.OpenWorkers(ctx)
+	}()
+
+	drainEvents(events, 3*time.Second)
+	<-done
+
+	select {
+	case <-called:
+		// Sucesso!
+	case <-time.After(3 * time.Second):
+		t.Errorf("webhook não foi acionado pelo Engine")
 	}
 }

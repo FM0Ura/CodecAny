@@ -28,6 +28,7 @@ type Engine struct {
 	watcher   *Watcher
 	cancelled chan struct{}
 	closeOnce sync.Once
+	webhook   *WebhookClient
 }
 
 // EngineDeps agrupa as dependências para criar um Engine.
@@ -67,6 +68,7 @@ func NewEngine(d EngineDeps) (*Engine, error) {
 		log:       d.Logger,
 		scanEvery: defaultScanInterval,
 		cancelled: make(chan struct{}),
+		webhook:   NewWebhookClient(d.Rules.Global().Notifications),
 	}, nil
 }
 
@@ -320,6 +322,9 @@ loop:
 		cl.Abort()
 		fin := time.Now()
 		e.store.UpdateStatus(job.ID, StatusRolledBack, nil, &fin, "")
+		job.Status = StatusRolledBack
+		job.SizeMetrics = m
+		e.sendWebhook(job, "failed")
 		e.log.Info("job revertido (economia insuficiente)",
 			"job_id", job.ID, "path", job.Path,
 			"savings_pct", m.CompressionRatioPct, "min_savings_pct", e.integrity.MinSavingPct,
@@ -337,6 +342,9 @@ loop:
 	e.store.UpdateMetrics(job.ID, m)
 	fin := time.Now()
 	e.store.UpdateStatus(job.ID, StatusCompleted, nil, &fin, "")
+	job.Status = StatusCompleted
+	job.SizeMetrics = m
+	e.sendWebhook(job, "completed")
 	e.log.Info("job completo", "job_id", job.ID, "path", job.Path, "driver", job.Driver,
 		"saved_bytes", m.SavedBytes, "savings_pct", m.CompressionRatioPct,
 		"duration_ms", time.Since(now).Milliseconds())
@@ -346,6 +354,9 @@ loop:
 func (e *Engine) fail(job *Job, msg string) {
 	fin := time.Now()
 	_ = e.store.UpdateStatus(job.ID, StatusFailed, nil, &fin, msg)
+	job.Status = StatusFailed
+	job.Error = msg
+	e.sendWebhook(job, "failed")
 	e.log.Error("job falhou", "job_id", job.ID, "path", job.Path, "driver", job.Driver, "error", msg)
 	e.emit(JobEvent{Kind: EventJobError, JobID: job.ID, FilePath: job.Path, Driver: job.Driver, Error: msg})
 }
@@ -394,6 +405,14 @@ func (e *Engine) StartWatch() {
 	}
 }
 
+// GetTotalSavings delega ao store a consulta consolidada de economias.
+func (e *Engine) GetTotalSavings() (SizeMetrics, error) {
+	if e.store == nil {
+		return SizeMetrics{}, fmt.Errorf("store não inicializado")
+	}
+	return e.store.GetTotalSavings()
+}
+
 // Shutdown encerra o watcher e o store.
 func (e *Engine) Shutdown() {
 	if e.watcher != nil {
@@ -402,6 +421,27 @@ func (e *Engine) Shutdown() {
 	if e.store != nil {
 		e.store.Close()
 	}
+}
+
+func (e *Engine) sendWebhook(job *Job, eventKind string) {
+	if e.webhook == nil {
+		return
+	}
+	jCopy := *job
+	if eventKind == "completed" {
+		jCopy.Status = StatusCompleted
+	} else if eventKind == "failed" {
+		if jCopy.Status != StatusRolledBack {
+			jCopy.Status = StatusFailed
+		}
+	}
+	e.wg.Add(1)
+	go func() {
+		defer e.wg.Done()
+		if err := e.webhook.Send(&jCopy, eventKind); err != nil {
+			e.log.Error("falha ao enviar webhook", "job_id", jCopy.ID, "event", eventKind, "error", err.Error())
+		}
+	}()
 }
 
 // Graceful encerra os workers aguardando conclusão da fila.

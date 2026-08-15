@@ -125,6 +125,24 @@ func (s *Store) UpdateMetrics(id string, m SizeMetrics) error {
 	return err
 }
 
+// GetTotalSavings calcula a economia de espaço consolidada (somatória de todos os jobs COMPLETED).
+func (s *Store) GetTotalSavings() (SizeMetrics, error) {
+	row := s.db.QueryRow(
+		`SELECT COALESCE(SUM(original_size), 0), COALESCE(SUM(converted_size), 0), COALESCE(SUM(saved_bytes), 0)
+		 FROM jobs
+		 WHERE status = ?`, StatusCompleted,
+	)
+	var m SizeMetrics
+	err := row.Scan(&m.OriginalSizeBytes, &m.ConvertedSizeBytes, &m.SavedBytes)
+	if err != nil {
+		return m, err
+	}
+	if m.OriginalSizeBytes > 0 {
+		m.CompressionRatioPct = (float64(m.SavedBytes) / float64(m.OriginalSizeBytes)) * 100.0
+	}
+	return m, nil
+}
+
 // NextPendingJob retorna o próximo Job aguardando processamento, por prioridade
 // (maior prioridade primeiro) e em ordem de criação (FIFO como desempate).
 func (s *Store) NextPendingJob() (*Job, error) {

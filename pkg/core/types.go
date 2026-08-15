@@ -25,7 +25,7 @@ type MediaInfo struct {
 	Width        int      `json:"width"`
 	Height       int      `json:"height"`
 	AudioCodecs  []string `json:"audio_codecs"`
-	SubtitleDirs []string `json:"subtitle_dirs"`
+	SubtitlePaths []string `json:"subtitle_dirs"`
 	HasVideo     bool     `json:"has_video"`
 	HasAudio     bool     `json:"has_audio"`
 	DurationSec  float64  `json:"duration_sec"`
@@ -38,6 +38,7 @@ type TargetSpec struct {
 	VideoCRF      int    `json:"video_crf,omitempty" yaml:"crf,omitempty"`
 	VideoPreset   string `json:"video_preset,omitempty" yaml:"preset,omitempty"`
 	VideoLossless bool   `json:"video_lossless,omitempty" yaml:"lossless,omitempty"`
+	VideoHWAccel  string `json:"video_hwaccel,omitempty" yaml:"hwaccel,omitempty"`
 	AudioCodec    string `json:"audio_codec,omitempty" yaml:"audio_codec,omitempty"`
 	AudioBitrate  string `json:"audio_bitrate,omitempty" yaml:"audio_bitrate,omitempty"`
 	Container     string `json:"container,omitempty" yaml:"container,omitempty"`

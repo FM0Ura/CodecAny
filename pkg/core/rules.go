@@ -24,6 +24,7 @@ type RuleDefaults struct {
 		CRF      int    `yaml:"crf" json:"crf"`
 		Preset   string `yaml:"preset" json:"preset"`
 		Lossless bool   `yaml:"lossless" json:"lossless"`
+		HWAccel  string `yaml:"hwaccel" json:"hwaccel"`
 	} `yaml:"video" json:"video"`
 	Audio struct {
 		Codec   string `yaml:"codec" json:"codec"`
@@ -75,6 +76,7 @@ type TargetSpecVideo struct {
 	CRF      int    `yaml:"crf" json:"crf"`
 	Preset   string `yaml:"preset" json:"preset"`
 	Lossless bool   `yaml:"lossless" json:"lossless"`
+	HWAccel  string `yaml:"hwaccel" json:"hwaccel"`
 }
 
 // TargetSpecAudio carrega campos de áudio.
@@ -100,12 +102,18 @@ type RuleFile struct {
 	Ignore  IgnoreRules    `yaml:"ignore" json:"ignore"`
 }
 
+type WebhookConfig struct {
+	URL    string   `yaml:"webhook_url" json:"webhook_url"`
+	Events []string `yaml:"events" json:"events"`
+}
+
 // RuleFileGlobal carrega configuração global.
 type RuleFileGlobal struct {
 	DefaultDriver string            `yaml:"default_driver" json:"default_driver"`
 	StagingDir    string            `yaml:"staging_dir" json:"staging_dir"`
 	SpaceSaving   SpaceSavingPolicy `yaml:"space_saving" json:"space_saving"`
 	Defaults      RuleDefaults      `yaml:"defaults" json:"defaults"`
+	Notifications WebhookConfig     `yaml:"notifications" json:"notifications"`
 }
 
 // IgnoreRules define arquivos/dirs que jamais serão processados.
@@ -428,9 +436,13 @@ func mergeSpec(c ConvertSpec, def RuleDefaults) TargetSpec {
 		out.VideoCRF = c.Video.CRF
 		out.VideoPreset = c.Video.Preset
 		out.VideoLossless = c.Video.Lossless
+		out.VideoHWAccel = c.Video.HWAccel
 	}
 	if out.VideoCodec == "" {
 		out.VideoCodec = def.Video.Codec
+	}
+	if out.VideoHWAccel == "" {
+		out.VideoHWAccel = def.Video.HWAccel
 	}
 	if !out.VideoLossless {
 		out.VideoLossless = def.Video.Lossless
