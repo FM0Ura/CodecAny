@@ -47,6 +47,16 @@ type ItemsMatch struct {
 // MatchVideo representa os critérios de correspondência de vídeo.
 type MatchVideo struct {
 	Codec Item `yaml:"codec" json:"codec"`
+
+	// MinHeight/MaxHeight comparam numericamente (>=/<=) contra MediaInfo.Height
+	// (0 = sem restrição nesse extremo). Diferente de Codec (Item), que é
+	// match escalar/lista OR, estes são comparações numéricas de faixa.
+	MinHeight int `yaml:"min_height" json:"min_height"`
+	MaxHeight int `yaml:"max_height" json:"max_height"`
+
+	// MinBitrateKbps compara numericamente (>=) contra
+	// MediaInfo.VideoBitrate/1000 (0 = sem restrição).
+	MinBitrateKbps int `yaml:"min_bitrate_kbps" json:"min_bitrate_kbps"`
 }
 
 // MatchAudio representa os critérios de correspondência de áudio.
@@ -86,6 +96,11 @@ type TargetSpecVideo struct {
 	Preset   string `yaml:"preset" json:"preset"`
 	Lossless *bool  `yaml:"lossless" json:"lossless"`
 	HWAccel  string `yaml:"hwaccel" json:"hwaccel"`
+
+	// MaxHeight, quando > 0, define o teto de altura do vídeo de saída (ver
+	// TargetSpec.VideoMaxHeight em types.go). Só existe a nível de regra, sem
+	// default global equivalente.
+	MaxHeight int `yaml:"max_height" json:"max_height"`
 }
 
 // TargetSpecAudio carrega campos de áudio.
@@ -311,11 +326,39 @@ func ruleMatches(rule Rule, mi MediaInfo) bool {
 	if !rule.Match.Video.Codec.matches(mi.VideoCodec) {
 		return false
 	}
+	if !heightMatches(rule.Match.Video.MinHeight, rule.Match.Video.MaxHeight, mi.Height) {
+		return false
+	}
+	if !minBitrateMatches(rule.Match.Video.MinBitrateKbps, mi.VideoBitrate) {
+		return false
+	}
 	// O áudio NÃO é impeditivo: critérios de áudio podem existir nas regras
 	// como intenção, mas um codec de áudio que não casa não impede a conversão
 	// do vídeo. O `convert.audio` determina a saída (habitualmente `copy`, sem
 	// perda geracional).
 	return true
+}
+
+// heightMatches compara mi.Height (já extraído pelo prober) contra a faixa
+// [minHeight, maxHeight] declarada na regra. Um extremo em 0 significa
+// "sem restrição" nesse lado da faixa.
+func heightMatches(minHeight, maxHeight, height int) bool {
+	if minHeight > 0 && height < minHeight {
+		return false
+	}
+	if maxHeight > 0 && height > maxHeight {
+		return false
+	}
+	return true
+}
+
+// minBitrateMatches compara o bitrate de vídeo da mídia (em bps, convertido
+// para kbps) contra o piso declarado na regra. minBitrateKbps<=0 é coringa.
+func minBitrateMatches(minBitrateKbps int, videoBitrateBps int64) bool {
+	if minBitrateKbps <= 0 {
+		return true
+	}
+	return videoBitrateBps/1000 >= int64(minBitrateKbps)
 }
 
 // containerAliases NORMALiza nomes de container: regras costumam usar extensões
@@ -408,6 +451,12 @@ func (r *RulesEngine) DescribeMiss(mi MediaInfo) string {
 		if crit, ok := itemMismatch(rule.Match.Video.Codec, mi.VideoCodec); !ok {
 			fails = append(fails, "video.codec("+crit+")")
 		}
+		if crit, ok := heightMismatch(rule.Match.Video.MinHeight, rule.Match.Video.MaxHeight, mi.Height); !ok {
+			fails = append(fails, "video.height("+crit+")")
+		}
+		if crit, ok := minBitrateMismatch(rule.Match.Video.MinBitrateKbps, mi.VideoBitrate); !ok {
+			fails = append(fails, "video.bitrate("+crit+")")
+		}
 		switch {
 		case len(fails) == 0:
 			parts = append(parts, rule.Name+": OK")
@@ -430,6 +479,29 @@ func itemMismatch(crit Item, actual string) (string, bool) {
 		}
 	}
 	return fmt.Sprintf("media=%s, esperado=%v", actual, crit.Values), false
+}
+
+// heightMismatch relata critério de altura não satisfeito; (reason, false) se falhou.
+func heightMismatch(minHeight, maxHeight, height int) (string, bool) {
+	if minHeight <= 0 && maxHeight <= 0 {
+		return "", true // coringa
+	}
+	if heightMatches(minHeight, maxHeight, height) {
+		return "", true
+	}
+	return fmt.Sprintf("media=%d, min=%d, max=%d", height, minHeight, maxHeight), false
+}
+
+// minBitrateMismatch relata critério de bitrate mínimo não satisfeito;
+// (reason, false) se falhou.
+func minBitrateMismatch(minBitrateKbps int, videoBitrateBps int64) (string, bool) {
+	if minBitrateKbps <= 0 {
+		return "", true // coringa
+	}
+	if minBitrateMatches(minBitrateKbps, videoBitrateBps) {
+		return "", true
+	}
+	return fmt.Sprintf("media=%dkbps, esperado>=%dkbps", videoBitrateBps/1000, minBitrateKbps), false
 }
 
 // containerMismatch relata por que o container da mídia não casou com a regra.
@@ -460,6 +532,8 @@ func mergeSpec(rule Rule, def RuleDefaults) TargetSpec {
 		out.VideoCRF = c.Video.CRF
 		out.VideoPreset = c.Video.Preset
 		out.VideoHWAccel = c.Video.HWAccel
+		// Só nível de regra, sem default global (ver TargetSpec.VideoMaxHeight).
+		out.VideoMaxHeight = c.Video.MaxHeight
 		if c.Video.Lossless != nil {
 			// A regra especificou lossless explicitamente (true ou false):
 			// esse valor prevalece e não deve ser sobrescrito pelo default global.

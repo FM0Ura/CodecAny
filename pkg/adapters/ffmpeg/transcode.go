@@ -153,7 +153,15 @@ func softwareFallbackCodec(codecBase string, lossless bool) string {
 }
 
 // buildArgs monta os argumentos do ffmpeg a partir do TargetSpec.
-func buildArgs(target core.TargetSpec, isMP4 bool, audioCodecs []string) []string {
+//
+// srcHeight é a altura do vídeo de origem (MediaInfo.Height), usada apenas
+// para decidir se um downscale via "-vf scale=-2:<max_height>" deve ser
+// aplicado quando target.VideoMaxHeight>0. Este é o PRIMEIRO filtro de vídeo
+// do projeto — até aqui buildArgs nunca emitia "-vf"/"-filter:v" para nenhum
+// caso; a introdução deste mecanismo é intencional e abre caminho para
+// filtros futuros (crop, deinterlace, tonemap HDR->SDR) sem exigir que sejam
+// implementados agora.
+func buildArgs(target core.TargetSpec, isMP4 bool, audioCodecs []string, srcHeight int) []string {
 	args := []string{"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-stats_period", "0.1"}
 
 	if target.VideoCodec != "" {
@@ -257,6 +265,15 @@ func buildArgs(target core.TargetSpec, isMP4 bool, audioCodecs []string) []strin
 					args = append(args, "-svtav1-params", "tune=0")
 				}
 			}
+
+			// Downscale declarativo (video.max_height): só se aplica quando há
+			// de fato recodificação (codec!="copy" — remux não deve escalar,
+			// já que "-c:v copy" não permite filtros de vídeo) e a origem é
+			// mais alta que o teto configurado. "-2" na largura mantém o
+			// aspect ratio e força um valor par (exigido por vários encoders).
+			if codec != "copy" && target.VideoMaxHeight > 0 && srcHeight > target.VideoMaxHeight {
+				args = append(args, "-vf", fmt.Sprintf("scale=-2:%d", target.VideoMaxHeight))
+			}
 		}
 	}
 
@@ -346,7 +363,7 @@ func buildTranscodeArgs(input, output string, media core.MediaInfo, target core.
 	// Preserva todos os metadados globais do arquivo de entrada (seção 10.1 do guia)
 	args = append(args, "-map_metadata", "0")
 
-	args = append(args, buildArgs(target, mp4, media.AudioCodecs)...)
+	args = append(args, buildArgs(target, mp4, media.AudioCodecs, media.Height)...)
 	args = append(args, output)
 
 	return args

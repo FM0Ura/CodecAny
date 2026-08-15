@@ -358,6 +358,153 @@ func TestMergeSpecAutoApproveDefaultsFalse(t *testing.T) {
 	}
 }
 
+// TestRulesMatchMinMaxHeight cobre o match numérico por altura de vídeo
+// (video.min_height/max_height), isolado.
+func TestRulesMatchMinMaxHeight(t *testing.T) {
+	content := `
+version: 1
+global: { staging_dir: /tmp/xs }
+rules:
+  - name: "downscale 4k"
+    match:
+      video: { min_height: 1440 }
+    convert:
+      video: { codec: hevc, max_height: 1080 }
+`
+	r := mustEngine(t, content)
+
+	// Altura acima do min_height: casa.
+	outcome, spec, err := r.Evaluate(MediaInfo{Container: "mkv", VideoCodec: "h264", Height: 2160})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome != OutcomeConvert {
+		t.Fatalf("altura 2160 >= min_height 1440 deveria casar; obteve %v", outcome)
+	}
+	if spec.VideoMaxHeight != 1080 {
+		t.Errorf("esperava VideoMaxHeight=1080 propagado de convert.video.max_height; obteve %d", spec.VideoMaxHeight)
+	}
+
+	// Altura abaixo do min_height: não casa.
+	outcome, _, err = r.Evaluate(MediaInfo{Container: "mkv", VideoCodec: "h264", Height: 720})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome != OutcomeSkipNoRule {
+		t.Fatalf("altura 720 < min_height 1440 não deveria casar; obteve %v", outcome)
+	}
+}
+
+// TestRulesMatchMaxHeightOnly cobre o match por video.max_height isolado
+// (limite superior sem piso).
+func TestRulesMatchMaxHeightOnly(t *testing.T) {
+	content := `
+version: 1
+global: { staging_dir: /tmp/xs }
+rules:
+  - name: "só conteúdo <= 720p"
+    match:
+      video: { max_height: 720 }
+    convert:
+      video: { codec: hevc }
+`
+	r := mustEngine(t, content)
+
+	outcome, _, err := r.Evaluate(MediaInfo{Container: "mkv", VideoCodec: "h264", Height: 480})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome != OutcomeConvert {
+		t.Fatalf("altura 480 <= max_height 720 deveria casar; obteve %v", outcome)
+	}
+
+	outcome, _, err = r.Evaluate(MediaInfo{Container: "mkv", VideoCodec: "h264", Height: 1080})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome != OutcomeSkipNoRule {
+		t.Fatalf("altura 1080 > max_height 720 não deveria casar; obteve %v", outcome)
+	}
+}
+
+// TestRulesMatchHeightCombinedWithCodec garante que o critério de altura se
+// combina (AND) com o critério de codec já existente, não substitui.
+func TestRulesMatchHeightCombinedWithCodec(t *testing.T) {
+	content := `
+version: 1
+global: { staging_dir: /tmp/xs }
+rules:
+  - name: "h264 4k -> hevc downscale"
+    match:
+      video: { codec: h264, min_height: 1440 }
+    convert:
+      video: { codec: hevc, max_height: 1080 }
+`
+	r := mustEngine(t, content)
+
+	// Codec casa, altura casa: convert.
+	outcome, _, err := r.Evaluate(MediaInfo{Container: "mkv", VideoCodec: "h264", Height: 2160})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome != OutcomeConvert {
+		t.Fatalf("codec+altura deveriam casar; obteve %v", outcome)
+	}
+
+	// Codec casa, altura NÃO casa: não deve casar.
+	outcome, _, err = r.Evaluate(MediaInfo{Container: "mkv", VideoCodec: "h264", Height: 1080})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome != OutcomeSkipNoRule {
+		t.Fatalf("codec casa mas altura não; não deveria casar. obteve %v", outcome)
+	}
+
+	// Altura casa, codec NÃO casa: não deve casar.
+	outcome, _, err = r.Evaluate(MediaInfo{Container: "mkv", VideoCodec: "hevc", Height: 2160})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome != OutcomeSkipNoRule {
+		t.Fatalf("altura casa mas codec não; não deveria casar. obteve %v", outcome)
+	}
+}
+
+// TestRulesMatchMinBitrateKbps cobre o match numérico por bitrate mínimo de
+// vídeo (video.min_bitrate_kbps), comparando contra MediaInfo.VideoBitrate
+// (em bps, convertido para kbps).
+func TestRulesMatchMinBitrateKbps(t *testing.T) {
+	content := `
+version: 1
+global: { staging_dir: /tmp/xs }
+rules:
+  - name: "só bitrate alto"
+    match:
+      video: { min_bitrate_kbps: 8000 }
+    convert:
+      video: { codec: hevc }
+`
+	r := mustEngine(t, content)
+
+	// 10000 kbps (10_000_000 bps) >= 8000 kbps: casa.
+	outcome, _, err := r.Evaluate(MediaInfo{Container: "mkv", VideoCodec: "h264", VideoBitrate: 10_000_000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome != OutcomeConvert {
+		t.Fatalf("bitrate 10000kbps >= min 8000kbps deveria casar; obteve %v", outcome)
+	}
+
+	// 4000 kbps < 8000 kbps: não casa.
+	outcome, _, err = r.Evaluate(MediaInfo{Container: "mkv", VideoCodec: "h264", VideoBitrate: 4_000_000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome != OutcomeSkipNoRule {
+		t.Fatalf("bitrate 4000kbps < min 8000kbps não deveria casar; obteve %v", outcome)
+	}
+}
+
 func TestRulesHWAccel(t *testing.T) {
 	content := `
 version: 1

@@ -182,7 +182,7 @@ func TestBuildArgs(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			isMP4 := tt.target.Container == "mp4"
-			got := buildArgs(tt.target, isMP4, nil)
+			got := buildArgs(tt.target, isMP4, nil, 0)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("buildArgs() = %v, want %v", got, tt.want)
 			}
@@ -206,7 +206,7 @@ func TestBuildArgs_DynamicAudio(t *testing.T) {
 		"-c:s", "copy",
 	}
 
-	got := buildArgs(target, false, audioCodecs)
+	got := buildArgs(target, false, audioCodecs, 0)
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("buildArgs() com áudio dinâmico = %v, want %v", got, want)
 	}
@@ -520,6 +520,124 @@ func TestReadProgress_ClampsFractionRange(t *testing.T) {
 			t.Errorf("fração fora de [0,1]: %v", v)
 		}
 	}
+}
+
+// TestBuildArgs_MaxHeightDownscale cobre o downscale declarativo via
+// video.max_height: o filtro "-vf scale=-2:<N>" só deve ser emitido quando a
+// origem é de fato mais alta que o teto E há recodificação real (codec !=
+// "copy" — remux não deve escalar, já que "-c:v copy" não aceita filtros).
+func TestBuildArgs_MaxHeightDownscale(t *testing.T) {
+	tests := []struct {
+		name      string
+		target    core.TargetSpec
+		srcHeight int
+		wantVF    string // "" significa que -vf não deve aparecer
+	}{
+		{
+			name: "downscale aplicado quando origem excede o teto",
+			target: core.TargetSpec{
+				VideoCodec:     "hevc",
+				VideoMaxHeight: 1080,
+			},
+			srcHeight: 2160,
+			wantVF:    "scale=-2:1080",
+		},
+		{
+			name: "omitido quando origem já está dentro do teto",
+			target: core.TargetSpec{
+				VideoCodec:     "hevc",
+				VideoMaxHeight: 1080,
+			},
+			srcHeight: 1080,
+			wantVF:    "",
+		},
+		{
+			name: "omitido quando origem é menor que o teto",
+			target: core.TargetSpec{
+				VideoCodec:     "hevc",
+				VideoMaxHeight: 1080,
+			},
+			srcHeight: 720,
+			wantVF:    "",
+		},
+		{
+			name: "omitido quando codec é copy (remux não escala) mesmo com origem maior",
+			target: core.TargetSpec{
+				VideoCodec:     "copy",
+				VideoMaxHeight: 1080,
+			},
+			srcHeight: 2160,
+			wantVF:    "",
+		},
+		{
+			name: "omitido quando VideoMaxHeight não configurado",
+			target: core.TargetSpec{
+				VideoCodec: "hevc",
+			},
+			srcHeight: 2160,
+			wantVF:    "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildArgs(tt.target, false, nil, tt.srcHeight)
+			gotVF := ""
+			for i, a := range got {
+				if a == "-vf" && i+1 < len(got) {
+					gotVF = got[i+1]
+				}
+			}
+			if gotVF != tt.wantVF {
+				t.Errorf("buildArgs() -vf = %q, want %q (args=%v)", gotVF, tt.wantVF, got)
+			}
+		})
+	}
+}
+
+// TestBuildTranscodeArgs_MaxHeightDownscale cobre o mesmo comportamento de
+// downscale, mas de ponta a ponta via buildTranscodeArgs (que extrai
+// srcHeight de media.Height).
+func TestBuildTranscodeArgs_MaxHeightDownscale(t *testing.T) {
+	t.Run("downscale aplicado quando media.Height excede o teto", func(t *testing.T) {
+		media := core.MediaInfo{HasVideo: true, VideoStreamIndex: 0, Height: 2160}
+		target := core.TargetSpec{VideoCodec: "hevc", VideoMaxHeight: 1080}
+
+		got := buildTranscodeArgs("in.mkv", "out.mkv", media, target)
+		found := false
+		for i, a := range got {
+			if a == "-vf" && i+1 < len(got) && got[i+1] == "scale=-2:1080" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("buildTranscodeArgs() esperava -vf scale=-2:1080, got %v", got)
+		}
+	})
+
+	t.Run("omitido quando media.Height já está dentro do teto", func(t *testing.T) {
+		media := core.MediaInfo{HasVideo: true, VideoStreamIndex: 0, Height: 720}
+		target := core.TargetSpec{VideoCodec: "hevc", VideoMaxHeight: 1080}
+
+		got := buildTranscodeArgs("in.mkv", "out.mkv", media, target)
+		for _, a := range got {
+			if a == "-vf" {
+				t.Fatalf("buildTranscodeArgs() não deveria conter -vf, got %v", got)
+			}
+		}
+	})
+
+	t.Run("omitido quando codec é copy mesmo com origem maior", func(t *testing.T) {
+		media := core.MediaInfo{HasVideo: true, VideoStreamIndex: 0, Height: 2160}
+		target := core.TargetSpec{VideoCodec: "copy", VideoMaxHeight: 1080}
+
+		got := buildTranscodeArgs("in.mkv", "out.mkv", media, target)
+		for _, a := range got {
+			if a == "-vf" {
+				t.Fatalf("buildTranscodeArgs() não deveria conter -vf para remux (codec=copy), got %v", got)
+			}
+		}
+	})
 }
 
 func TestParseOutTime(t *testing.T) {

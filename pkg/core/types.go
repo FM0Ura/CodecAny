@@ -68,6 +68,13 @@ type TargetSpec struct {
 	VideoPreset   string `json:"video_preset,omitempty" yaml:"preset,omitempty"`
 	VideoLossless bool   `json:"video_lossless,omitempty" yaml:"lossless,omitempty"`
 	VideoHWAccel  string `json:"video_hwaccel,omitempty" yaml:"hwaccel,omitempty"`
+
+	// VideoMaxHeight, quando > 0, limita a altura do vídeo de saída: se a
+	// altura de origem for maior, o transcoder aplica um filtro de downscale
+	// (ver buildArgs em pkg/adapters/ffmpeg/transcode.go). Só existe como
+	// override por regra (ConvertSpec.Video.MaxHeight) — não há default
+	// global para este campo, seguindo o exemplo de uso do doc de propostas.
+	VideoMaxHeight int `json:"video_max_height,omitempty" yaml:"max_height,omitempty"`
 	AudioCodec    string `json:"audio_codec,omitempty" yaml:"audio_codec,omitempty"`
 	AudioBitrate  string `json:"audio_bitrate,omitempty" yaml:"audio_bitrate,omitempty"`
 	Container     string `json:"container,omitempty" yaml:"container,omitempty"`
