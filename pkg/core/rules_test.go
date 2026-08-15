@@ -261,6 +261,43 @@ rules:
 	}
 }
 
+// TestRulesLosslessExplicitFalseOverridesDefault reproduz o bug em que uma
+// regra com `lossless: false` explícito (para usar CRF/lossy) era
+// silenciosamente sobrescrita pelo default global `lossless: true`, pois
+// ambos os casos ("não especificado" e "explicitamente false") produziam o
+// mesmo bool zero-value. Com Lossless como *bool, a escolha explícita da
+// regra deve prevalecer sobre o default.
+func TestRulesLosslessExplicitFalseOverridesDefault(t *testing.T) {
+	content := `
+version: 1
+global:
+  staging_dir: /tmp/xs
+  defaults:
+    video: { codec: hevc, crf: 22, preset: slow, lossless: true }
+rules:
+  - name: opt_out_of_lossless
+    match:
+      video: { codec: h264 }
+    convert:
+      video: { codec: hevc, lossless: false, crf: 28 }
+`
+	r := mustEngine(t, content)
+	mi := MediaInfo{Container: "mkv", VideoCodec: "h264"}
+	outcome, spec, err := r.Evaluate(mi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome != OutcomeConvert {
+		t.Fatalf("esperava convert, obteve %v", outcome)
+	}
+	if spec.VideoLossless {
+		t.Errorf("esperava VideoLossless = false (regra opta explicitamente por lossy), obteve true (default global sobrescreveu)")
+	}
+	if spec.VideoCRF != 28 {
+		t.Errorf("esperava VideoCRF = 28 (definido pela regra), obteve %d", spec.VideoCRF)
+	}
+}
+
 func TestRulesHWAccel(t *testing.T) {
 	content := `
 version: 1

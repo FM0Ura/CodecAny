@@ -23,7 +23,7 @@ type RuleDefaults struct {
 		Codec    string `yaml:"codec" json:"codec"`
 		CRF      int    `yaml:"crf" json:"crf"`
 		Preset   string `yaml:"preset" json:"preset"`
-		Lossless bool   `yaml:"lossless" json:"lossless"`
+		Lossless *bool  `yaml:"lossless" json:"lossless"`
 		HWAccel  string `yaml:"hwaccel" json:"hwaccel"`
 	} `yaml:"video" json:"video"`
 	Audio struct {
@@ -71,11 +71,14 @@ type ConvertSpec struct {
 }
 
 // TargetSpecVideo carrega campos de vídeo.
+// Lossless é *bool para distinguir "não especificado na regra" (nil) de
+// "explicitamente false" — ver mergeSpec, que não deve deixar o default
+// global sobrescrever uma escolha explícita da regra.
 type TargetSpecVideo struct {
 	Codec    string `yaml:"codec" json:"codec"`
 	CRF      int    `yaml:"crf" json:"crf"`
 	Preset   string `yaml:"preset" json:"preset"`
-	Lossless bool   `yaml:"lossless" json:"lossless"`
+	Lossless *bool  `yaml:"lossless" json:"lossless"`
 	HWAccel  string `yaml:"hwaccel" json:"hwaccel"`
 }
 
@@ -202,6 +205,9 @@ func (i Item) matches(value string) bool {
 
 func boolPtr(b bool) *bool { return &b }
 
+// boolVal lê um *bool tratando nil como false (valor "não especificado").
+func boolVal(b *bool) bool { return b != nil && *b }
+
 // RulesEngine carrega e avalia as regras declarativas.
 type RulesEngine struct {
 	file RuleFile
@@ -307,21 +313,21 @@ func ruleMatches(rule Rule, mi MediaInfo) bool {
 // ("matroska,webm", "mov,mp4,m4a,3gp,3g2,mj2"). O mapeamento abaixo une as duas
 // visões para que "container: mkv" corresponda a arquivos matroska reais.
 var containerAliases = map[string][]string{
-	"mkv":           {"mkv", "matroska"},
-	"matroska":      {"mkv", "matroska"},
-	"webm":          {"webm"},
-	"mp4":           {"mp4", "mov"},
-	"mov":           {"mp4", "mov"},
-	"m4v":           {"mp4"},
-	"m4a":           {"mp4"},
-	"avi":           {"avi"},
-	"mpegts":        {"mpegts", "ts"},
-	"ts":            {"mpegts", "ts"},
-	"m2ts":          {"m2ts"},
-	"flv":           {"flv"},
-	"ogg":           {"ogg"},
-	"wmv":           {"wmv"},
-	"auto":          {}, // coringa
+	"mkv":      {"mkv", "matroska"},
+	"matroska": {"mkv", "matroska"},
+	"webm":     {"webm"},
+	"mp4":      {"mp4", "mov"},
+	"mov":      {"mp4", "mov"},
+	"m4v":      {"mp4"},
+	"m4a":      {"mp4"},
+	"avi":      {"avi"},
+	"mpegts":   {"mpegts", "ts"},
+	"ts":       {"mpegts", "ts"},
+	"m2ts":     {"m2ts"},
+	"flv":      {"flv"},
+	"ogg":      {"ogg"},
+	"wmv":      {"wmv"},
+	"auto":     {}, // coringa
 }
 
 // containerMatches compara o container reportado pelo prober contra os valores
@@ -431,12 +437,18 @@ func mergeSpec(c ConvertSpec, def RuleDefaults) TargetSpec {
 	out := TargetSpec{
 		Container: def.Container,
 	}
+	var losslessSetByRule bool
 	if c.Video != nil {
 		out.VideoCodec = c.Video.Codec
 		out.VideoCRF = c.Video.CRF
 		out.VideoPreset = c.Video.Preset
-		out.VideoLossless = c.Video.Lossless
 		out.VideoHWAccel = c.Video.HWAccel
+		if c.Video.Lossless != nil {
+			// A regra especificou lossless explicitamente (true ou false):
+			// esse valor prevalece e não deve ser sobrescrito pelo default global.
+			out.VideoLossless = *c.Video.Lossless
+			losslessSetByRule = true
+		}
 	}
 	if out.VideoCodec == "" {
 		out.VideoCodec = def.Video.Codec
@@ -444,8 +456,8 @@ func mergeSpec(c ConvertSpec, def RuleDefaults) TargetSpec {
 	if out.VideoHWAccel == "" {
 		out.VideoHWAccel = def.Video.HWAccel
 	}
-	if !out.VideoLossless {
-		out.VideoLossless = def.Video.Lossless
+	if !losslessSetByRule {
+		out.VideoLossless = boolVal(def.Video.Lossless)
 	}
 	if out.VideoCRF == 0 && !out.VideoLossless {
 		out.VideoCRF = def.Video.CRF
