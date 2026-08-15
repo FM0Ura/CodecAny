@@ -29,6 +29,7 @@ type Engine struct {
 	cancelled chan struct{}
 	closeOnce sync.Once
 	webhook   *WebhookClient
+	webhookWG sync.WaitGroup
 }
 
 // EngineDeps agrupa as dependências para criar um Engine.
@@ -423,13 +424,32 @@ func (e *Engine) GetTotalSavings() (SizeMetrics, error) {
 	return e.store.GetTotalSavings()
 }
 
-// Shutdown encerra o watcher e o store.
+// Shutdown encerra o watcher e o store. Antes disso, aguarda (com timeout
+// limitado) os webhooks pendentes terminarem, sem bloquear indefinidamente
+// caso o endpoint configurado esteja fora do ar.
 func (e *Engine) Shutdown() {
+	e.waitWebhooks(5 * time.Second)
 	if e.watcher != nil {
 		e.watcher.Close()
 	}
 	if e.store != nil {
 		e.store.Close()
+	}
+}
+
+// waitWebhooks aguarda até timeout pelas goroutines de envio de webhook em
+// andamento. Se o timeout expirar, segue em frente (as goroutines continuam
+// rodando em background até concluir ou o processo encerrar).
+func (e *Engine) waitWebhooks(timeout time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		e.webhookWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		e.log.Warn("timeout aguardando webhooks pendentes durante shutdown")
 	}
 }
 
@@ -445,9 +465,14 @@ func (e *Engine) sendWebhook(job *Job, eventKind string) {
 			jCopy.Status = StatusFailed
 		}
 	}
-	e.wg.Add(1)
+	// Deliberadamente fora do e.wg: webhooks são fire-and-forget e não devem
+	// atrasar OpenWorkers/RunOnce, cujo retorno (e a saída do processo CLI)
+	// bloquearia até ~19s por job aguardando retries de um endpoint fora do ar.
+	// webhookWG é aguardado (com timeout) em Shutdown() só para dar uma chance
+	// de flush antes do processo encerrar.
+	e.webhookWG.Add(1)
 	go func() {
-		defer e.wg.Done()
+		defer e.webhookWG.Done()
 		if err := e.webhook.Send(&jCopy, eventKind); err != nil {
 			e.log.Error("falha ao enviar webhook", "job_id", jCopy.ID, "event", eventKind, "error", err.Error())
 		}
