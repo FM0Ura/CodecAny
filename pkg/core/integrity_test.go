@@ -12,7 +12,7 @@ func TestIntegrityCheckKeepsWhenSaving(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
 	c := NewIntegrityCheck(15)
-	keep, m, err := c.Check(orig, out)
+	keep, m, err := c.Check(orig, out, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,7 @@ func TestIntegrityCheckRollbackWhenInsufficient(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
 	c := NewIntegrityCheck(15)
-	keep, _, err := c.Check(orig, out)
+	keep, _, err := c.Check(orig, out, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,11 +50,30 @@ func TestIntegrityCheckRollbackWhenBigger(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
 	c := NewIntegrityCheck(15)
-	keep, _, err := c.Check(orig, out)
+	keep, _, err := c.Check(orig, out, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if keep {
 		t.Fatal("output maior que original deve dar rollback")
+	}
+}
+
+func TestIntegrityCheckSkipsSavingsPolicyForRemux(t *testing.T) {
+	dir := t.TempDir()
+	orig := writeFileSize(t, dir+"/orig.mkv", 1000)
+	out := writeFileSize(t, dir+"/out.mkv", 1200) // output maior que o original
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+	c := NewIntegrityCheck(15)
+	keep, m, err := c.Check(orig, out, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !keep {
+		t.Fatal("remux-only (skipSavingsPolicy=true) não deve sofrer rollback mesmo com output maior")
+	}
+	if m.ConvertedSizeBytes != 1200 || m.OriginalSizeBytes != 1000 {
+		t.Errorf("métricas inesperadas: %+v", m)
 	}
 }

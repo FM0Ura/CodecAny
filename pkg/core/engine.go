@@ -311,7 +311,7 @@ loop:
 		}
 	}
 
-	keep, m, err := e.integrity.Check(job.Path, cl.Output())
+	keep, m, err := e.integrity.Check(job.Path, cl.Output(), job.Target.VideoCodec == "copy")
 	if err != nil {
 		cl.Abort()
 		e.fail(job, fmt.Sprintf("verificação de integridade: %v", err))

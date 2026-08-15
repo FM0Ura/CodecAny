@@ -33,7 +33,16 @@ func ComputeSizeMetrics(originalSize, convertedSize int64) SizeMetrics {
 
 // Check avalia se o output deve ser mantido ou revertido (rollback).
 // Retorna true se o output representa economia >= limite configurado.
-func (c *IntegrityCheck) Check(originalPath, outputPath string) (bool, SizeMetrics, error) {
+//
+// skipSavingsPolicy isenta o job das duas comparações de tamanho (limiar
+// MinSavingPct e "output maior que original") — usado por jobs remux-only
+// (video.codec: copy, Fase 3), cujo propósito é compatibilidade de
+// container, não economia de espaço. As métricas ainda são computadas e
+// retornadas normalmente para registro/relatório; a única guarda de
+// segurança que continua se aplicando nesse caso é a verificação de
+// decodificação via MediaVerifier.Verify (chamada pelo Engine antes de
+// Check, não neste método).
+func (c *IntegrityCheck) Check(originalPath, outputPath string, skipSavingsPolicy bool) (bool, SizeMetrics, error) {
 	origInfo, err := os.Stat(originalPath)
 	if err != nil {
 		return false, SizeMetrics{}, fmt.Errorf("stat original: %w", err)
@@ -43,6 +52,10 @@ func (c *IntegrityCheck) Check(originalPath, outputPath string) (bool, SizeMetri
 		return false, SizeMetrics{}, fmt.Errorf("stat output: %w", err)
 	}
 	m := ComputeSizeMetrics(origInfo.Size(), outInfo.Size())
+
+	if skipSavingsPolicy {
+		return true, m, nil
+	}
 
 	// output maior que original → ganho negativo → rollback
 	if m.ConvertedSizeBytes >= m.OriginalSizeBytes {
