@@ -16,4 +16,5 @@ graphify-out
 
 # Build
 codecany
+codecany-server
 logs/
