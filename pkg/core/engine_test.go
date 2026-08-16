@@ -987,3 +987,145 @@ func TestEngineRollbackPersistsMetrics(t *testing.T) {
 		t.Errorf("SizeMetrics.SavedBytes esperado 50, obteve %d (métricas não persistidas no rollback)", job.SizeMetrics.SavedBytes)
 	}
 }
+
+// TestReloadRulesHotSwap prova o item 4 da tabela de mudanças do core:
+// Engine.ReloadRules troca as regras usadas por HandleDiscovered em runtime,
+// sem reiniciar o processo, e faz isso de forma segura sob concorrência
+// (rode com -race). Reusa o padrão controllableTranscoder/release de
+// TestEngineHWAccelLimitBlocksConcurrentTranscodes para segurar um job em
+// voo (jobA) enquanto o Reload acontece: como job.Target já foi resolvido em
+// HandleDiscovered — ANTES do Reload —, o job em voo termina usando as
+// regras ANTIGAS (hevc); um job descoberto DEPOIS do Reload (jobB) já usa as
+// regras NOVAS (av1). O snapshot trocado só é alcançado por avaliações
+// futuras, nunca por uma já em andamento.
+func TestReloadRulesHotSwap(t *testing.T) {
+	base := t.TempDir()
+	stage := filepath.Join(base, "staging")
+	mediaA := filepath.Join(base, "movieA.mkv")
+	mediaB := filepath.Join(base, "movieB.mkv")
+	writeFileSize(t, mediaA, 1000)
+	writeFileSize(t, mediaB, 1000)
+
+	oldRules := "version: 1\nglobal:\n  default_driver: mock\n  staging_dir: " + stage + "\n  space_saving:\n    min_saving_pct: 15\n  defaults:\n    video: { codec: hevc }\n    auto_approve: true\nrules:\n  - name: to_hevc\n    convert:\n      video: { codec: hevc }\n"
+	rulesPath := writeRules(t, oldRules)
+
+	store, err := NewStore(filepath.Join(base, "codecany.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	re, err := NewRulesEngine(rulesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ct := &controllableTranscoder{
+		outputSize:    500,
+		release:       make(chan struct{}),
+		startedNotify: make(chan struct{}, 2),
+	}
+	events := make(chan JobEvent, 64)
+	eng, err := NewEngine(EngineDeps{
+		Store:   store,
+		Rules:   re,
+		Prober:  mockProber{info: MediaInfo{Container: "mkv", VideoCodec: "h264"}},
+		Engines: []TranscoderEngine{ct},
+		Workers: 2,
+		Events:  events,
+		Logger:  slog.New(slog.NewTextHandler(os.Stderr, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !eng.HandleDiscovered(mediaA) {
+		t.Fatal("esperava job A enfileirado")
+	}
+	jobA, err := store.FindByPath(mediaA)
+	if err != nil || jobA == nil {
+		t.Fatalf("esperava job A persistido: %v", err)
+	}
+	if jobA.Target.VideoCodec != "hevc" {
+		t.Fatalf("esperava target hevc (regras antigas) para job A, obteve %q", jobA.Target.VideoCodec)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	doneA := make(chan struct{})
+	go func() { defer close(doneA); eng.runJob(ctx, jobA) }()
+
+	// Espera o job A entrar em Transcode antes de trocar as regras — garante
+	// que o Reload concorrente acontece com um job genuinamente "em voo".
+	select {
+	case <-ct.startedNotify:
+	case <-time.After(2 * time.Second):
+		t.Fatal("job A não chamou Transcode dentro do tempo limite")
+	}
+
+	newRules := "version: 1\nglobal:\n  default_driver: mock\n  staging_dir: " + stage + "\n  space_saving:\n    min_saving_pct: 15\n  defaults:\n    video: { codec: av1 }\n    auto_approve: true\nrules:\n  - name: to_av1\n    convert:\n      video: { codec: av1 }\n"
+	newRulesPath := writeRules(t, newRules)
+	if err := eng.ReloadRules(newRulesPath); err != nil {
+		t.Fatalf("ReloadRules: %v", err)
+	}
+
+	// Libera o job A para concluir. Seu TargetSpec já foi resolvido antes do
+	// Reload, então o resultado final deve preservar as regras ANTIGAS.
+	select {
+	case ct.release <- struct{}{}:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout ao liberar job A")
+	}
+	<-doneA
+
+	gotA, err := store.FindByID(jobA.ID)
+	if err != nil || gotA == nil {
+		t.Fatalf("esperava job A no store: %v", err)
+	}
+	if gotA.Status != StatusCompleted {
+		t.Errorf("status do job A = %v, esperado COMPLETED", gotA.Status)
+	}
+	if gotA.Target.VideoCodec != "hevc" {
+		t.Errorf("job A deveria preservar o target resolvido com as regras antigas (hevc), obteve %q (regras trocadas vazaram para um job já em voo)", gotA.Target.VideoCodec)
+	}
+
+	// Job B, descoberto DEPOIS do Reload, já enxerga as regras novas.
+	if !eng.HandleDiscovered(mediaB) {
+		t.Fatal("esperava job B enfileirado")
+	}
+	jobB, err := store.FindByPath(mediaB)
+	if err != nil || jobB == nil {
+		t.Fatalf("esperava job B persistido: %v", err)
+	}
+	if jobB.Target.VideoCodec != "av1" {
+		t.Errorf("job B deveria usar as regras novas (av1) pós-Reload, obteve %q", jobB.Target.VideoCodec)
+	}
+}
+
+// TestReloadRulesInvalidLeavesSnapshotUnchanged prova que um Reload com um
+// arquivo inválido (parse ou Validate) retorna erro e NÃO afeta o snapshot
+// em uso — a próxima avaliação continua vendo as regras antigas.
+func TestReloadRulesInvalidLeavesSnapshotUnchanged(t *testing.T) {
+	eng, _, mediaPath, _ := setupEngine(t, 1000, 500)
+
+	badPath := filepath.Join(t.TempDir(), "bad.yaml")
+	if err := os.WriteFile(badPath, []byte("version: 1\nglobal: { staging_dir: /tmp/xs }\nrules: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := eng.ReloadRules(badPath); err == nil {
+		t.Fatal("esperava erro ao recarregar regras inválidas (rules vazio)")
+	}
+
+	if !eng.HandleDiscovered(mediaPath) {
+		t.Fatal("regras antigas deveriam continuar válidas após Reload falho")
+	}
+	job, err := eng.store.FindByPath(mediaPath)
+	if err != nil || job == nil {
+		t.Fatalf("esperava job persistido com as regras antigas: %v", err)
+	}
+	if job.Target.VideoCodec != "hevc" {
+		t.Errorf("esperava target hevc (regras antigas preservadas), obteve %q", job.Target.VideoCodec)
+	}
+}

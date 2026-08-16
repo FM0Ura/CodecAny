@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 
 	"gopkg.in/yaml.v3"
 )
@@ -194,6 +195,39 @@ func (i *Item) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// MarshalJSON serializa Item de volta a escalar OU lista, espelhando
+// exatamente o shape aceito por UnmarshalJSON: zero valores → "" (coringa,
+// mesmo shape de um campo "ausente" reidratado por UnmarshalJSON, que ignora
+// string vazia); exatamente um valor → escalar (NÃO array de 1 elemento -
+// round-tripar como escalar é o contrato esperado pela API/rules.yaml
+// reescrito pela UI); mais de um valor → array. Sem este método, o
+// encoding/json default serializaria sempre {"Values":[...]}, quebrando a
+// API e o próprio rules.yaml editado pelo builder de regras (item 1 da
+// tabela de mudanças do core).
+func (i Item) MarshalJSON() ([]byte, error) {
+	switch len(i.Values) {
+	case 0:
+		return json.Marshal("")
+	case 1:
+		return json.Marshal(i.Values[0])
+	default:
+		return json.Marshal(i.Values)
+	}
+}
+
+// MarshalYAML espelha MarshalJSON para o encoder YAML (gopkg.in/yaml.v3
+// reconhece a interface yaml.Marshaler via este método).
+func (i Item) MarshalYAML() (interface{}, error) {
+	switch len(i.Values) {
+	case 0:
+		return "", nil
+	case 1:
+		return i.Values[0], nil
+	default:
+		return i.Values, nil
+	}
+}
+
 func (i *Item) fromNode(node *yaml.Node) error {
 	switch node.Kind {
 	case yaml.ScalarNode:
@@ -243,30 +277,65 @@ func boolPtr(b bool) *bool { return &b }
 // boolVal lê um *bool tratando nil como false (valor "não especificado").
 func boolVal(b *bool) bool { return b != nil && *b }
 
-// RulesEngine carrega e avalia as regras declarativas.
-type RulesEngine struct {
-	file RuleFile
+// Action enum válidos — usado por RuleFile.Validate.
+var validRuleActions = map[RuleAction]bool{
+	ActionConvert: true,
+	ActionSkip:    true,
+	"":            true, // vazio == ActionConvert (default histórico, ver Evaluate)
 }
 
-// NewRulesEngine lê um arquivo YAML ou JSON de regras.
-func NewRulesEngine(path string) (*RulesEngine, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("ler rules: %w", err)
-	}
-	var f RuleFile
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".json":
-		err = json.Unmarshal(data, &f)
-	default:
-		err = yaml.Unmarshal(data, &f)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("parse rules: %w", err)
-	}
+// Validate valida a integridade estrutural de um RuleFile antes de ser usado
+// para avaliar mídias ou persistido em disco (item 3 da tabela de mudanças
+// do core): regras não vazias, cada regra com nome e Action válidos,
+// min_saving_pct dentro de [0,100] e default_driver não vazio. Usado tanto
+// por NewRulesEngine/Reload (via loadRuleFile) quanto pelo handler
+// `PUT /api/rules` do cmd/server, que precisa recusar (400) uma edição
+// inválida da UI ANTES de tocar o arquivo em disco.
+func (f RuleFile) Validate() error {
 	if len(f.Rules) == 0 {
-		return nil, errors.New("rules não contém regras")
+		return errors.New("rules não contém regras")
 	}
+	if strings.TrimSpace(f.Global.DefaultDriver) == "" {
+		return errors.New("global.default_driver não pode ser vazio")
+	}
+	if f.Global.SpaceSaving.MinSavingPct < 0 || f.Global.SpaceSaving.MinSavingPct > 100 {
+		return fmt.Errorf("global.space_saving.min_saving_pct deve estar entre 0 e 100 (recebido %v)", f.Global.SpaceSaving.MinSavingPct)
+	}
+	for i, rule := range f.Rules {
+		if strings.TrimSpace(rule.Name) == "" {
+			return fmt.Errorf("regra #%d: nome não pode ser vazio", i)
+		}
+		if !validRuleActions[rule.Action] {
+			return fmt.Errorf("regra %q: action inválida: %q", rule.Name, rule.Action)
+		}
+	}
+	return nil
+}
+
+// RulesEngine carrega e avalia as regras declarativas.
+//
+// Thread-safety / hot-reload (item 4 da tabela de mudanças do core): o
+// RuleFile completo é mantido atrás de um atomic.Pointer, trocado de uma vez
+// só (CAS) a cada Reload — leituras concorrentes (Evaluate/DescribeMiss/
+// ShouldIgnore/Global/File, chamadas por N workers e por qualquer handler
+// HTTP) nunca observam um RuleFile parcialmente escrito, sem precisar de
+// mutex/RWMutex. Reload, no entanto, NÃO substitui o snapshot inteiro: por
+// design (ver Engine.ReloadRules), o hot-reload é restrito ao casamento de
+// regras — só Rules e Global.Defaults do novo arquivo entram no próximo
+// snapshot; todo o resto (DefaultDriver, StagingDir, SpaceSaving,
+// HWAccelLimits, Notifications, Ignore, Version) é preservado do snapshot
+// atual, porque o Engine já capturou esses valores (e.staging/e.integrity/
+// e.hwSemaphores/e.webhook) uma única vez em NewEngine e recalculá-los em
+// runtime seria perigoso (ex.: mudar staging_dir no meio de um job cujo
+// Cleanup foi reconstruído deterministicamente a partir de e.staging).
+type RulesEngine struct {
+	snap atomic.Pointer[RuleFile]
+}
+
+// applyRuleFileDefaults preenche os valores default históricos de
+// NewRulesEngine (pré-existentes a esta fase, preservados tal como estavam)
+// quando o arquivo carregado não os especifica.
+func applyRuleFileDefaults(f *RuleFile) {
 	if f.Global.SpaceSaving.MinSavingPct <= 0 {
 		f.Global.SpaceSaving.MinSavingPct = 15
 	}
@@ -279,12 +348,82 @@ func NewRulesEngine(path string) (*RulesEngine, error) {
 	if f.Global.StagingDir == "" {
 		f.Global.StagingDir = ".codecany_tmp"
 	}
-	return &RulesEngine{file: f}, nil
 }
+
+// loadRuleFile lê e parseia (YAML ou JSON, pela extensão) um arquivo de
+// regras, aplica os defaults históricos e valida o resultado via
+// RuleFile.Validate — helper compartilhado por NewRulesEngine e
+// RulesEngine.Reload, para que os dois caminhos de carga nunca divirjam.
+func loadRuleFile(path string) (RuleFile, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return RuleFile{}, fmt.Errorf("ler rules: %w", err)
+	}
+	var f RuleFile
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".json":
+		err = json.Unmarshal(data, &f)
+	default:
+		err = yaml.Unmarshal(data, &f)
+	}
+	if err != nil {
+		return RuleFile{}, fmt.Errorf("parse rules: %w", err)
+	}
+	applyRuleFileDefaults(&f)
+	if err := f.Validate(); err != nil {
+		return RuleFile{}, err
+	}
+	return f, nil
+}
+
+// NewRulesEngine lê um arquivo YAML ou JSON de regras.
+func NewRulesEngine(path string) (*RulesEngine, error) {
+	f, err := loadRuleFile(path)
+	if err != nil {
+		return nil, err
+	}
+	re := &RulesEngine{}
+	re.snap.Store(&f)
+	return re, nil
+}
+
+// Reload relê `path` e, se válido, troca atomicamente (CAS) só a parte de
+// casamento de regras (Rules + Global.Defaults) do snapshot em uso — o
+// restante do RuleFile (DefaultDriver, StagingDir, SpaceSaving,
+// HWAccelLimits, Notifications, Ignore, Version) é preservado do snapshot
+// anterior (ver comentário do struct RulesEngine). Chamado a partir de
+// Engine.ReloadRules; um job em voo que já leu seu TargetSpec (ruleMatches/
+// Evaluate rodam em HandleDiscovered, ANTES do job ser enfileirado) não é
+// afetado por um Reload concorrente — o snapshot antigo só deixa de ser
+// alcançável por NOVAS chamadas a Evaluate/DescribeMiss depois do CAS.
+// Se o novo arquivo for inválido (parse ou Validate), retorna erro e o
+// snapshot em uso permanece intocado.
+func (r *RulesEngine) Reload(path string) error {
+	next, err := loadRuleFile(path)
+	if err != nil {
+		return err
+	}
+	for {
+		old := r.snap.Load()
+		merged := *old
+		merged.Rules = next.Rules
+		merged.Global.Defaults = next.Global.Defaults
+		if r.snap.CompareAndSwap(old, &merged) {
+			return nil
+		}
+	}
+}
+
+// current retorna o snapshot ativo no momento da chamada (leitura atômica).
+func (r *RulesEngine) current() RuleFile { return *r.snap.Load() }
+
+// File retorna uma cópia do RuleFile atualmente em uso (item 13 da tabela de
+// mudanças do core) — usado pelo handler `GET /api/rules` do cmd/server.
+func (r *RulesEngine) File() RuleFile { return r.current() }
 
 // ShouldIgnore verifica se um caminho está na lista de ignores.
 func (r *RulesEngine) ShouldIgnore(path string, size int64) bool {
-	ig := r.file.Ignore
+	ig := r.current().Ignore
 	if size > 0 && ig.MinSizeBytes > 0 && size < ig.MinSizeBytes {
 		return true
 	}
@@ -303,7 +442,7 @@ func (r *RulesEngine) ShouldIgnore(path string, size int64) bool {
 }
 
 // Global retorna as configurações globais.
-func (r *RulesEngine) Global() RuleFileGlobal { return r.file.Global }
+func (r *RulesEngine) Global() RuleFileGlobal { return r.current().Global }
 
 // Global-RulesEngine avaliam o resultado da avaliação de uma mídia.
 type RuleOutcome int
@@ -315,21 +454,34 @@ const (
 )
 
 // Evaluate aplica first-match wins sobre uma MediaInfo (seção 4.2).
-// Retorna o TargetSpec (merged com defaults) e o outcome.
+// Retorna o TargetSpec (merged com defaults) e o outcome. Usa um único
+// snapshot (r.current()) para toda a avaliação — mesmo que um Reload
+// concorrente troque o snapshot ativo no meio da chamada, esta avaliação vê
+// um RuleFile consistente do início ao fim (nunca uma mistura das regras
+// antigas com os defaults novos ou vice-versa).
 func (r *RulesEngine) Evaluate(mi MediaInfo) (RuleOutcome, TargetSpec, error) {
-	for _, rule := range r.file.Rules {
+	f := r.current()
+	for _, rule := range f.Rules {
 		if !ruleMatches(rule, mi) {
 			continue
 		}
 		if rule.Action == ActionSkip {
 			return OutcomeSkip, TargetSpec{}, nil
 		}
-		return OutcomeConvert, mergeSpec(rule, r.file.Global.Defaults), nil
+		return OutcomeConvert, mergeSpec(rule, f.Global.Defaults), nil
 	}
 	return OutcomeSkipNoRule, TargetSpec{}, nil
 }
 
+// ruleMatches decide se `rule` casa com `mi`. Regras desabilitadas
+// (Enabled != nil && !*Enabled) nunca casam — convenção INVERTIDA da usada
+// por AutoApprove/Lossless (nil == habilitada, para retrocompat com
+// rules.yaml existentes que não têm o campo; só `false` explícito
+// desabilita). Ver item 2 da tabela de mudanças do core.
 func ruleMatches(rule Rule, mi MediaInfo) bool {
+	if rule.Enabled != nil && !*rule.Enabled {
+		return false
+	}
 	if !containerMatches(rule.Match.Container, mi.Container) {
 		return false
 	}
@@ -450,10 +602,15 @@ func containerSet(tokens []string) []string {
 // DescribeMiss gera um diagnóstico de por que cada regra não casou com a mídia.
 // Para cada regra são apontados os critérios (container/video) que falharam,
 // mostrando o valor real da mídia vs. os valores aceitos pela regra. O áudio
-// não é reportado como falha, pois não é impeditivo para a conversão.
+// não é reportado como falha, pois não é impeditivo para a conversão. Regras
+// desabilitadas (ver ruleMatches) são omitidas inteiramente do diagnóstico —
+// não aparecem nem como falha nem como candidata "OK" (item 2).
 func (r *RulesEngine) DescribeMiss(mi MediaInfo) string {
 	var parts []string
-	for _, rule := range r.file.Rules {
+	for _, rule := range r.current().Rules {
+		if rule.Enabled != nil && !*rule.Enabled {
+			continue
+		}
 		var fails []string
 		if crit, ok := containerMismatch(rule.Match.Container, mi.Container); !ok {
 			fails = append(fails, "container("+crit+")")
