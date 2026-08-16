@@ -18,11 +18,11 @@ func TestIsSupported(t *testing.T) {
 		{"noext", false},
 		{"movie.txt", false},
 		{"pew.twitter", false},
-		{"movie.mkv.part", true},      // cópia parcial em andamento
+		{"movie.mkv.part", true},       // cópia parcial em andamento
 		{"movie.mkv.crdownload", true}, // download em andamento
-		{"movie.mkv.tmp", true},       // temp
-		{"notes.part", false},         // parcial sem base de mídia
-		{"image.mkv.jpg", false},      // base não-renomeável (ext final não media)
+		{"movie.mkv.tmp", true},        // temp
+		{"notes.part", false},          // parcial sem base de mídia
+		{"image.mkv.jpg", false},       // base não-renomeável (ext final não media)
 	}
 	for _, c := range cases {
 		if got := isSupported(c.path); got != c.want {
