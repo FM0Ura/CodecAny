@@ -1199,3 +1199,130 @@ func TestReloadRulesInvalidLeavesSnapshotUnchanged(t *testing.T) {
 		t.Errorf("esperava target hevc (regras antigas preservadas), obteve %q", job.Target.VideoCodec)
 	}
 }
+
+// TestEngineRecoverStuckFinalizationRollsBack cobre o gap de recovery
+// encontrado ao analisar segurança contra kill -9/perda de energia: um Job
+// preso em StatusFinalizing exatamente entre os dois passos de Commit()
+// (original -> .bak, depois output -> destino final) deixava o arquivo
+// original renomeado/"sumido" para sempre, sem nenhuma recuperação
+// automática no boot (RecoverInterrupted só cobria StatusInProgress).
+// bootRecover agora detecta esse caso via recoverStuckFinalization, restaura
+// o original a partir do backup, e libera o path para reprocessamento
+// (marca FAILED — status terminal aceito por HandleDiscovered).
+func TestEngineRecoverStuckFinalizationRollsBack(t *testing.T) {
+	eng, _, mediaPath, stage := setupEngine(t, 1000, 500)
+	if !eng.HandleDiscovered(mediaPath) {
+		t.Fatal("esperava job enfileirado")
+	}
+	job, err := eng.store.FindByPath(mediaPath)
+	if err != nil || job == nil {
+		t.Fatalf("esperava job persistido: %v", err)
+	}
+
+	// Simula o crash exatamente entre os dois passos de Commit(): reconstrói
+	// o Cleanup do mesmo jeito que runJob faria (mesmo padrão determinístico
+	// já usado por ApproveJob/RejectJob) e cria o estado em disco de "passo A
+	// já rodou, passo B nunca rodou" — original -> .bak, output completo em
+	// staging, mediaPath ausente.
+	cl, err := NewCleanup(job.Path, stage, job.Target.Container)
+	if err != nil {
+		t.Fatalf("NewCleanup: %v", err)
+	}
+	if err := os.Rename(mediaPath, mediaPath+".bak"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cl.Output(), []byte("convertido"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.store.UpdateStatus(job.ID, StatusFinalizing, nil, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// "Reinicia": bootRecover é exatamente o que um processo novo chamaria ao
+	// subir apontando pro mesmo Store/staging — Cleanup não guarda estado em
+	// memória, só job.Path/e.staging/job.Target.Container, então rodar de
+	// novo no mesmo Engine é equivalente.
+	if err := eng.bootRecover(); err != nil {
+		t.Fatalf("bootRecover: %v", err)
+	}
+
+	got, err := eng.store.FindByID(job.ID)
+	if err != nil || got == nil {
+		t.Fatalf("esperava job ainda existir: %v", err)
+	}
+	if got.Status != StatusFailed {
+		t.Fatalf("status = %v, want FAILED", got.Status)
+	}
+	if !strings.Contains(got.Error, "original restaurado") {
+		t.Errorf("mensagem de erro não descreve a restauração: %q", got.Error)
+	}
+
+	b, err := os.ReadFile(mediaPath)
+	if err != nil {
+		t.Fatalf("esperava %s restaurado: %v", mediaPath, err)
+	}
+	if len(b) != 1000 {
+		t.Errorf("conteúdo restaurado com tamanho inesperado: %d bytes, want 1000", len(b))
+	}
+	if _, err := os.Stat(mediaPath + ".bak"); !os.IsNotExist(err) {
+		t.Error("esperava .bak removido após restauração")
+	}
+
+	// O path fica livre para reprocessamento: HandleDiscovered não deveria
+	// mais recusar por já existir um job não-terminal (FAILED é terminal).
+	if !eng.HandleDiscovered(mediaPath) {
+		t.Error("esperava HandleDiscovered aceitar o path após recovery (job anterior é FAILED)")
+	}
+}
+
+// TestEngineRecoverStuckTestingRequeues cobre o mesmo gap de recovery para
+// StatusTesting: como Commit() nunca chega a ser chamado nessa fase, o
+// original nunca é tocado — mas sem a correção o job ficava preso em TESTING
+// pra sempre (RecoverInterrupted não cobre esse status), bloqueando
+// silenciosamente qualquer reprocessamento futuro do mesmo path.
+func TestEngineRecoverStuckTestingRequeues(t *testing.T) {
+	eng, _, mediaPath, stage := setupEngine(t, 1000, 500)
+	if !eng.HandleDiscovered(mediaPath) {
+		t.Fatal("esperava job enfileirado")
+	}
+	job, err := eng.store.FindByPath(mediaPath)
+	if err != nil || job == nil {
+		t.Fatalf("esperava job persistido: %v", err)
+	}
+
+	cl, err := NewCleanup(job.Path, stage, job.Target.Container)
+	if err != nil {
+		t.Fatalf("NewCleanup: %v", err)
+	}
+	if err := os.WriteFile(cl.Output(), []byte("convertido"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.store.UpdateStatus(job.ID, StatusTesting, nil, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := eng.bootRecover(); err != nil {
+		t.Fatalf("bootRecover: %v", err)
+	}
+
+	got, err := eng.store.FindByID(job.ID)
+	if err != nil || got == nil {
+		t.Fatalf("esperava job ainda existir: %v", err)
+	}
+	if got.Status != StatusFailed {
+		t.Fatalf("status = %v, want FAILED", got.Status)
+	}
+
+	// Original nunca deveria ter sido tocado nesta fase.
+	b, err := os.ReadFile(mediaPath)
+	if err != nil || len(b) != 1000 {
+		t.Fatalf("original alterado inesperadamente: len=%d, err=%v", len(b), err)
+	}
+	if _, err := os.Stat(cl.StageDir()); !os.IsNotExist(err) {
+		t.Error("esperava staging purgada, mas existe")
+	}
+
+	if !eng.HandleDiscovered(mediaPath) {
+		t.Error("esperava HandleDiscovered aceitar o path após recovery (job anterior é FAILED)")
+	}
+}

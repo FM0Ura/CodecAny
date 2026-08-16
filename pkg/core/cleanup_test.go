@@ -219,3 +219,165 @@ func TestCleanupCommitContainerAuto(t *testing.T) {
 		t.Fatalf("não deveria existir um arquivo com extensão .auto")
 	}
 }
+
+// TestRecoverInterruptedCommitRollsBack simula o crash exatamente entre os
+// dois passos de Commit(): o original já foi renomeado para .bak (passo A)
+// mas a troca atômica do output para o destino final (passo B) nunca
+// aconteceu — finalPath está ausente. RecoverInterruptedCommit deve
+// restaurar o backup de volta para o caminho original.
+func TestRecoverInterruptedCommitRollsBack(t *testing.T) {
+	dir := t.TempDir()
+	stage := t.TempDir()
+	job := filepath.Join(dir, "movie.mkv")
+
+	cl, err := NewCleanup(job, stage, "")
+	if err != nil {
+		t.Fatalf("NewCleanup: %v", err)
+	}
+	// Estado exato no meio de Commit(): passo A já rodou (original -> .bak),
+	// passo B nunca chegou a rodar. O output em staging pode ou não estar
+	// completo — não importa pro rollback, ele é descartado de qualquer forma.
+	if err := os.WriteFile(job+".bak", []byte("bytes-originais"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cl.Output(), []byte("bytes-convertidos"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if outcome := cl.RecoverInterruptedCommit(); outcome != RecoveryRolledBack {
+		t.Fatalf("outcome = %v, want RecoveryRolledBack", outcome)
+	}
+
+	b, err := os.ReadFile(job)
+	if err != nil {
+		t.Fatalf("esperava %s restaurado: %v", job, err)
+	}
+	if string(b) != "bytes-originais" {
+		t.Errorf("conteúdo restaurado incorreto: %q", b)
+	}
+	if _, err := os.Stat(job + ".bak"); !os.IsNotExist(err) {
+		t.Errorf("esperava .bak removido após restauração, mas existe")
+	}
+	if _, err := os.Stat(cl.StageDir()); !os.IsNotExist(err) {
+		t.Errorf("esperava staging purgada, mas existe")
+	}
+}
+
+// TestRecoverInterruptedCommitRollsBackWithContainerChange é a mesma
+// simulação de TestRecoverInterruptedCommitRollsBack, mas com troca de
+// container (.avi -> .mkv) — regressão específica para o bug encontrado ao
+// escrever RecoverInterruptedCommit: checar a existência de jobPath (em vez
+// de finalPath) para decidir se a troca já tinha concluído classificaria
+// erroneamente TODO job com troca de extensão como "já ausente/rollback",
+// já que jobPath (a extensão antiga) deixa de existir desde o passo A
+// independentemente do resultado do passo B.
+func TestRecoverInterruptedCommitRollsBackWithContainerChange(t *testing.T) {
+	dir := t.TempDir()
+	stage := t.TempDir()
+	job := filepath.Join(dir, "movie.avi")
+
+	cl, err := NewCleanup(job, stage, "mkv")
+	if err != nil {
+		t.Fatalf("NewCleanup: %v", err)
+	}
+	if got, want := cl.FinalPath(), filepath.Join(dir, "movie.mkv"); got != want {
+		t.Fatalf("FinalPath() = %q, want %q", got, want)
+	}
+
+	if err := os.WriteFile(job+".bak", []byte("bytes-originais"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cl.Output(), []byte("bytes-convertidos"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if outcome := cl.RecoverInterruptedCommit(); outcome != RecoveryRolledBack {
+		t.Fatalf("outcome = %v, want RecoveryRolledBack", outcome)
+	}
+	b, err := os.ReadFile(job)
+	if err != nil || string(b) != "bytes-originais" {
+		t.Fatalf("esperava %s restaurado com bytes-originais: %q, %v", job, b, err)
+	}
+	if _, err := os.Stat(cl.FinalPath()); !os.IsNotExist(err) {
+		t.Errorf("não deveria existir %s (troca de container nunca concluiu)", cl.FinalPath())
+	}
+}
+
+// TestRecoverInterruptedCommitAlreadyCommittedWithLeftoverBackup simula um
+// crash logo APÓS o passo B (troca já concluída) mas ANTES da limpeza do
+// backup/staging (passos C/D): finalPath já tem o conteúdo convertido e o
+// .bak ainda existe. Nada deve ser restaurado — só a limpeza é completada.
+func TestRecoverInterruptedCommitAlreadyCommittedWithLeftoverBackup(t *testing.T) {
+	dir := t.TempDir()
+	stage := t.TempDir()
+	job := filepath.Join(dir, "movie.mkv")
+
+	cl, err := NewCleanup(job, stage, "")
+	if err != nil {
+		t.Fatalf("NewCleanup: %v", err)
+	}
+	if err := os.WriteFile(job, []byte("bytes-convertidos"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(job+".bak", []byte("bytes-originais"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if outcome := cl.RecoverInterruptedCommit(); outcome != RecoveryAlreadyCommitted {
+		t.Fatalf("outcome = %v, want RecoveryAlreadyCommitted", outcome)
+	}
+	b, err := os.ReadFile(job)
+	if err != nil || string(b) != "bytes-convertidos" {
+		t.Errorf("jobPath não deveria ter sido alterado: %q, %v", b, err)
+	}
+	if _, err := os.Stat(job + ".bak"); !os.IsNotExist(err) {
+		t.Errorf("esperava .bak limpo, mas existe")
+	}
+	if _, err := os.Stat(cl.StageDir()); !os.IsNotExist(err) {
+		t.Errorf("esperava staging purgada, mas existe")
+	}
+}
+
+// TestRecoverInterruptedCommitAlreadyCommittedNoBackup cobre o caso em que
+// finalPath já existe (convertido, ou o Commit() nunca chegou a rodar — não
+// dá pra saber com certeza só olhando o filesystem) e não há backup nenhum:
+// nada a restaurar, o arquivo já está num estado consistente de qualquer
+// forma.
+func TestRecoverInterruptedCommitAlreadyCommittedNoBackup(t *testing.T) {
+	dir := t.TempDir()
+	stage := t.TempDir()
+	job := filepath.Join(dir, "movie.mkv")
+
+	cl, err := NewCleanup(job, stage, "")
+	if err != nil {
+		t.Fatalf("NewCleanup: %v", err)
+	}
+	if err := os.WriteFile(job, []byte("qualquer-conteudo"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if outcome := cl.RecoverInterruptedCommit(); outcome != RecoveryAlreadyCommitted {
+		t.Fatalf("outcome = %v, want RecoveryAlreadyCommitted", outcome)
+	}
+	if _, err := os.Stat(cl.StageDir()); !os.IsNotExist(err) {
+		t.Errorf("esperava staging purgada, mas existe")
+	}
+}
+
+// TestRecoverInterruptedCommitAmbiguous cobre o estado inesperado: nem
+// finalPath nem o backup existem em disco (ex.: falha dupla durante a cópia
+// cross-device). Nenhuma ação automática deve ser tentada.
+func TestRecoverInterruptedCommitAmbiguous(t *testing.T) {
+	dir := t.TempDir()
+	stage := t.TempDir()
+	job := filepath.Join(dir, "movie.mkv")
+
+	cl, err := NewCleanup(job, stage, "")
+	if err != nil {
+		t.Fatalf("NewCleanup: %v", err)
+	}
+
+	if outcome := cl.RecoverInterruptedCommit(); outcome != RecoveryAmbiguous {
+		t.Fatalf("outcome = %v, want RecoveryAmbiguous", outcome)
+	}
+}

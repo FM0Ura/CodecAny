@@ -208,29 +208,72 @@ func (c *Cleanup) CommitFiles(outputPath string) error {
 	return c.Commit()
 }
 
-// BootPurge repara resíduos abandonados por crashes (seção 5.3): restaura
-// qualquer .bak e remove staging/tmp órfãos.
-func BootPurge(stageRoot string) error {
-	return filepath.Walk(stageRoot, func(path string, info os.FileInfo, err error) error {
-		if err != nil || !info.IsDir() {
-			return nil
+// RecoveryOutcome descreve o que RecoverInterruptedCommit encontrou em disco
+// ao inspecionar um Job preso em StatusFinalizing após uma interrupção dura
+// (kill -9, perda de energia — fora da janela coberta pelo shutdown
+// gracioso, que sempre deixa Commit()/Abort() terminarem sozinhos antes do
+// processo sair). Ver Engine.recoverStuckFinalization.
+type RecoveryOutcome int
+
+const (
+	// RecoveryRolledBack: Commit() morreu entre renomear o original para
+	// .bak (passo A) e a troca atômica do output para o destino final
+	// (passo B) — finalPath estava ausente, o backup foi restaurado de
+	// volta para jobPath (o nome original — ver o comentário sobre
+	// finalPath abaixo). O job precisa ser reprocessado do zero (o output
+	// em staging não tem garantia de ainda estar íntegro/completo).
+	RecoveryRolledBack RecoveryOutcome = iota
+	// RecoveryAlreadyCommitted: finalPath já existia em disco (convertido
+	// ou original, não dá pra saber com certeza só olhando o filesystem) —
+	// o passo B tinha concluído (ou nunca chegou a começar), só faltava
+	// limpeza. Nada foi restaurado; reprocessar esse arquivo é seguro de
+	// qualquer forma (se já estiver convertido, a regra deixa de casar e
+	// HandleDiscovered simplesmente ignora).
+	RecoveryAlreadyCommitted
+	// RecoveryAmbiguous: nem finalPath nem o backup foram encontrados —
+	// estado inesperado (ex.: falha dupla durante a cópia cross-device).
+	// Nenhuma ação automática é segura aqui; requer investigação manual.
+	RecoveryAmbiguous
+)
+
+// RecoverInterruptedCommit inspeciona o disco para um Job preso em
+// StatusFinalizing (Commit() interrompido por kill -9/perda de energia) e
+// restaura um estado seguro e consistente, sem nunca apagar o backup antes
+// de ter certeza de que não é mais necessário. Sempre purga a staging ao
+// final — o output ali, se existir, já foi consumido (promovido ou
+// descartado) e não serve mais pra nada. Ver RecoveryOutcome para o
+// significado de cada resultado.
+//
+// Checa finalPath (não jobPath) para saber se a troca já aconteceu: quando o
+// container alvo muda a extensão (ex.: .avi -> .mkv), o passo B do Commit()
+// escreve em finalPath, não em jobPath — e jobPath já não existe mais desde
+// o passo A independentemente do resultado do passo B (foi renomeado para o
+// backup). Usar jobPath aqui classificaria erroneamente todo job com troca
+// de extensão como "ausente" mesmo quando a troca já tinha concluído com
+// sucesso.
+func (c *Cleanup) RecoverInterruptedCommit() RecoveryOutcome {
+	_, errFinal := os.Stat(c.finalPath)
+	finalExists := errFinal == nil
+	_, errBak := os.Stat(c.localBak)
+	bakExists := errBak == nil
+
+	switch {
+	case !finalExists && bakExists:
+		if err := os.Rename(c.localBak, c.jobPath); err != nil {
+			// Nem o rollback funcionou — deixa o .bak no lugar (NÃO apaga)
+			// para investigação manual, não mexe na staging.
+			return RecoveryAmbiguous
 		}
-		entries, _ := os.ReadDir(path)
-		var bakPath string
-		for _, e := range entries {
-			if strings.HasSuffix(e.Name(), ".bak") {
-				bakPath = filepath.Join(path, e.Name())
-			} else if strings.HasSuffix(e.Name(), ".tmp") {
-				os.Remove(filepath.Join(path, e.Name()))
-			}
-		}
-		if bakPath != "" {
-			// stagingDir = stageRoot/<base>/ e original = <stageRoot>/<base><ext>
-			base := filepath.Base(path)
-			ext := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(bakPath), "original"), ".bak")
-			orig := filepath.Join(filepath.Dir(path), base+ext)
-			os.Rename(bakPath, orig)
-		}
-		return os.RemoveAll(path)
-	})
+		os.RemoveAll(c.stageDir)
+		return RecoveryRolledBack
+	case finalExists && bakExists:
+		os.Remove(c.localBak)
+		os.RemoveAll(c.stageDir)
+		return RecoveryAlreadyCommitted
+	case finalExists && !bakExists:
+		os.RemoveAll(c.stageDir)
+		return RecoveryAlreadyCommitted
+	default: // !finalExists && !bakExists
+		return RecoveryAmbiguous
+	}
 }

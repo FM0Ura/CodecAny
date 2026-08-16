@@ -223,6 +223,83 @@ func (e *Engine) bootRecover() error {
 		return err
 	}
 	e.log.Info("recuperados jobs de run anterior", "count", len(jobs))
+
+	// RecoverInterrupted só cobre StatusInProgress (transcode em voo — nunca
+	// tocou o original, basta reenfileirar). Jobs presos em StatusTesting ou
+	// StatusFinalizing por um kill -9/perda de energia (fora da janela
+	// coberta pelo shutdown gracioso, que sempre deixa Commit()/Abort()
+	// terminarem antes do processo sair) exigem inspecionar o disco antes de
+	// decidir o que fazer — ver recoverStuckFinalization.
+	if err := e.recoverStuckFinalization(); err != nil {
+		e.log.Error("recuperação de jobs presos em finalização falhou", "error", err.Error())
+	}
+	return nil
+}
+
+// recoverStuckFinalization repara Jobs presos em StatusTesting/
+// StatusFinalizing após uma interrupção dura do processo. Reconstrói o
+// *Cleanup deterministicamente a partir de job.Path/e.staging/
+// job.Target.Container — mesmo padrão já usado por ApproveJob/RejectJob,
+// funciona mesmo chamado de um processo novo, já que Cleanup.Track() nunca é
+// usado em lugar nenhum do código (não há estado extra a recuperar além do
+// que já está no disco e no Job).
+//
+// Todo job recuperado é marcado StatusFailed com uma mensagem explicando o
+// que foi encontrado — nunca COMPLETED, mesmo quando o disco sugere que a
+// troca já tinha concluído: sem ter presenciado o Commit() de verdade, a
+// escolha mais segura é deixar o arquivo pronto para reprocessamento em vez
+// de assumir sucesso. FAILED é um status terminal aceito por
+// HandleDiscovered para recriar o job; reprocessar um arquivo que na
+// verdade já foi convertido com sucesso é seguro — a regra deixa de casar
+// (codec já é o alvo) e o arquivo é simplesmente ignorado na nova avaliação.
+func (e *Engine) recoverStuckFinalization() error {
+	var stuck []*Job
+	for _, status := range []JobStatus{StatusTesting, StatusFinalizing} {
+		js, err := e.store.ListByStatus(status)
+		if err != nil {
+			return err
+		}
+		stuck = append(stuck, js...)
+	}
+
+	for _, job := range stuck {
+		cl, err := NewCleanup(job.Path, e.staging, job.Target.Container)
+		if err != nil {
+			e.log.Error("recuperação de boot: falha ao reconstruir staging",
+				"job_id", job.ID, "path", job.Path, "error", err.Error())
+			continue
+		}
+
+		var msg string
+		switch job.Status {
+		case StatusTesting:
+			// TESTING nunca chega a chamar Commit() — o original nunca foi
+			// tocado. Abort() já cobre este caso (restauraria um .bak que
+			// não deveria existir nesta fase, e purga a staging).
+			cl.Abort()
+			msg = "interrompido durante verificação de integridade (crash/kill/queda de energia) — reprocessamento necessário"
+		default: // StatusFinalizing
+			switch cl.RecoverInterruptedCommit() {
+			case RecoveryRolledBack:
+				msg = "interrompido durante finalização; arquivo original restaurado a partir do backup — reprocessamento necessário"
+			case RecoveryAlreadyCommitted:
+				msg = "interrompido durante finalização após a troca já ter concluído (ou nunca ter começado) — reprocessamento necessário; será ignorado automaticamente se o arquivo já estiver no formato alvo"
+			default: // RecoveryAmbiguous
+				msg = "interrompido durante finalização em estado inesperado (nem original nem backup encontrados em disco) — verificação manual necessária: " + job.Path
+				e.log.Error("recuperação de boot: estado ambíguo, intervenção manual necessária",
+					"job_id", job.ID, "path", job.Path)
+			}
+		}
+
+		fin := time.Now()
+		if err := e.store.UpdateStatus(job.ID, StatusFailed, nil, &fin, msg); err != nil {
+			e.log.Error("recuperação de boot: falha ao marcar job como failed",
+				"job_id", job.ID, "error", err.Error())
+			continue
+		}
+		e.log.Warn("job recuperado após interrupção dura", "job_id", job.ID,
+			"path", job.Path, "status_anterior", job.Status, "resultado", msg)
+	}
 	return nil
 }
 
