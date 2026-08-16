@@ -1,0 +1,211 @@
+.history {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.history__filters {
+  display: flex;
+  align-items: flex-end;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.history__filter {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4em;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+}
+
+.history__filter select {
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-weight: 500;
+  font-size: 13px;
+  text-transform: none;
+  letter-spacing: normal;
+  padding: 0.5em 0.7em;
+}
+
+.history__filter select:focus {
+  outline: none;
+  border-color: var(--accent-dim);
+}
+
+.history__count {
+  color: var(--text-faint);
+  font-size: 12.5px;
+  margin-left: auto;
+  align-self: center;
+}
+
+.history__banner {
+  padding: 0.9rem 1.1rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--danger-border);
+  background: var(--danger-fill);
+  color: var(--danger);
+  font-size: 13px;
+}
+
+.history__empty-note {
+  color: var(--text-faint);
+  font-size: 13px;
+}
+
+/* --- Tabela de histórico --- */
+
+.history__table-wrap {
+  overflow-x: auto;
+}
+
+.history__table {
+  font-size: 13px;
+}
+
+.history__table th {
+  text-align: left;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-faint);
+  padding: 0.5em 0.8em;
+  border-bottom: 1px solid var(--border-soft);
+  white-space: nowrap;
+}
+
+.history__table td {
+  padding: 0.55em 0.8em;
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.history__table tbody tr:hover {
+  background: var(--surface-2);
+}
+
+.history__path {
+  font-family: var(--font-mono);
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ===================================================================
+   Gráfico de economia por dia — série única (sem legenda), grid
+   recessivo, rótulo direto seletivo (só "hoje"), tooltip via
+   CSS ::after + atributo data-value. Ver skill dataviz.
+   =================================================================== */
+
+.savings-chart {
+  display: flex;
+  flex-direction: column;
+}
+
+.savings-chart__plot {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  height: 160px;
+  padding-top: 0.5rem;
+  /* Grid recessivo: 4 linhas horizontais hairline, um passo acima da
+     superfície — nunca mais forte que os dados. */
+  background-image: repeating-linear-gradient(
+    to top,
+    var(--border-soft) 0,
+    var(--border-soft) 1px,
+    transparent 1px,
+    transparent 25%
+  );
+  background-size: 100% 100%;
+}
+
+.savings-chart__col {
+  flex: 1;
+  min-width: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  height: 100%;
+  gap: 0.4em;
+}
+
+.savings-chart__bar {
+  position: relative;
+  width: 100%;
+  max-width: 24px;
+  min-height: 2px;
+  background: var(--signal);
+  border-radius: 4px 4px 0 0;
+}
+
+.savings-chart__bar--today {
+  background: var(--signal);
+  box-shadow: 0 0 0 1px var(--signal-dim);
+}
+
+/* Tooltip CSS-only: valor exato ao passar o mouse ou focar (teclado),
+   sem estado JS. */
+.savings-chart__bar::after {
+  content: attr(data-value);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 0.3em 0.6em;
+  border-radius: var(--radius);
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+  z-index: 2;
+}
+
+.savings-chart__bar:hover::after,
+.savings-chart__bar:focus-visible::after {
+  opacity: 1;
+}
+
+.savings-chart__axis-label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.savings-chart__col:has(.savings-chart__bar--today) .savings-chart__axis-label {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.savings-chart__total {
+  margin-top: 0.9rem;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border-soft);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .savings-chart__bar::after {
+    transition: none;
+  }
+}

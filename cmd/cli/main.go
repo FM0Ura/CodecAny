@@ -372,21 +372,12 @@ func runManagementCommand(a managementArgs, out io.Writer) int {
 	return 0
 }
 
-// healthCheckResult é a linha de saída JSON de -health-check (uma por
-// arquivo verificado, quando -json está ativo).
-type healthCheckResult struct {
-	Path   string `json:"path"`
-	Status string `json:"status"`
-	Error  string `json:"error,omitempty"`
-}
-
-// runHealthCheck implementa o modo -health-check standalone (Fase 5): varre
-// dirs via core.DiscoverFiles (mesmo filtro de extensão do watcher em tempo
-// real) e usa files diretamente (sem filtro, mesmo comportamento que -file já
-// tem no resto do programa), chamando verifier.Verify em cada arquivo
-// encontrado. Nunca enfileira nada, nunca chama HandleDiscovered, nunca sobe
-// Engine/Store/Watcher — só detecção, sem nenhuma tentativa de reparo
-// automático (fora de escopo, ver docs/propostas_v1.2_adicional.md).
+// runHealthCheck é o formatter fino do modo -health-check standalone (Fase
+// 5) sobre core.RunHealthCheck (Fase E): a varredura em si (descoberta via
+// core.DiscoverFiles + verifier.Verify por arquivo, sem enfileirar nada e
+// sem subir Engine/Store/Watcher) vive em pkg/core/healthcheck.go — aqui só
+// formatamos core.HealthCheckResult como texto ([OK]/[CORRUPTED] por linha)
+// ou JSON (uma linha por arquivo, quando -json está ativo).
 //
 // verifier é injetado (em vez de construído internamente via
 // ffmpeg.NewVerifier()) para permitir testar esta função com um fake, sem
@@ -395,34 +386,27 @@ type healthCheckResult struct {
 // Retorna 1 se algum arquivo corrompido foi encontrado (scriptável em
 // cron/CI), 0 caso contrário.
 func runHealthCheck(dirs, files []string, verifier core.MediaVerifier, w io.Writer, jsonOut bool) int {
-	found, err := core.DiscoverFiles(dirs)
+	results, err := core.RunHealthCheck(dirs, files, verifier)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "erro ao varrer diretórios:", err)
 		return 1
 	}
-	targets := append(found, files...)
 
 	corrupted := false
 	enc := json.NewEncoder(w)
-	for _, path := range targets {
-		verifyErr := verifier.Verify(path)
-		if verifyErr != nil {
+	for _, res := range results {
+		if res.Status == core.HealthStatusCorrupted {
 			corrupted = true
 		}
 		if jsonOut {
-			res := healthCheckResult{Path: path, Status: "ok"}
-			if verifyErr != nil {
-				res.Status = "corrupted"
-				res.Error = verifyErr.Error()
-			}
 			_ = enc.Encode(res)
 			continue
 		}
-		if verifyErr != nil {
-			fmt.Fprintf(w, "[CORRUPTED] %s: %v\n", path, verifyErr)
+		if res.Status == core.HealthStatusCorrupted {
+			fmt.Fprintf(w, "[CORRUPTED] %s: %s\n", res.Path, res.Error)
 			continue
 		}
-		fmt.Fprintf(w, "[OK] %s\n", path)
+		fmt.Fprintf(w, "[OK] %s\n", res.Path)
 	}
 	if corrupted {
 		return 1

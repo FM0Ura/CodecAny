@@ -1,6 +1,7 @@
 import type {
   DashboardSummary,
   FsBrowseResult,
+  HealthCheckResult,
   Job,
   JobEvent,
   RuleFile,
@@ -107,6 +108,22 @@ export function getJobs(filter: JobFilter = {}): Promise<Job[]> {
 
 export function getJob(id: string): Promise<Job> {
   return getJSON<Job>(`/api/jobs/${encodeURIComponent(id)}`);
+}
+
+export interface HealthCheckRequest {
+  dirs?: string[];
+  files?: string[];
+}
+
+/**
+ * Dispara POST /api/health-check (Fase E). Síncrono no servidor — pode
+ * demorar bastante para bibliotecas grandes; a UI deve mostrar um indicador
+ * de carregamento enquanto aguarda. Corpo vazio ({}) usa o fallback de
+ * diretórios monitorados configurados no boot do servidor (ver
+ * cmd/server/healthcheck.go).
+ */
+export function runHealthCheck(req: HealthCheckRequest = {}): Promise<HealthCheckResult[]> {
+  return postJSON<HealthCheckResult[]>("/api/health-check", req);
 }
 
 const EVENT_KINDS: JobEvent["kind"][] = [

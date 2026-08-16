@@ -41,7 +41,13 @@ type dashboardSummary struct {
 // Engine só expõe RulesEngine indiretamente (campo privado), e os handlers
 // de GET/PUT /api/rules + POST /api/rules/test precisam falar com o
 // RulesEngine e o MediaProber diretamente (ver cmd/server/main.go::
-// buildEngine).
+// buildEngine). Verifier e Dirs foram adicionados na Fase E: Verifier é
+// usado por POST /api/health-check, e Dirs (os diretórios monitorados no
+// boot deste processo, -dir) é o fallback de diretórios quando o request de
+// health-check não informa dirs/files — ver handleHealthCheck em
+// healthcheck.go. Dirs é distinto de watched_dirs (Fase C, persistido via
+// Store/Engine.ListWatchedDirs): é só o snapshot efêmero de -dir capturado
+// em main.go, mesmo padrão já usado por eng.WatchDir na Fase A.
 type App struct {
 	Engine      *core.Engine
 	Rules       *core.RulesEngine
@@ -51,6 +57,8 @@ type App struct {
 	StartedAt   time.Time
 	Assets      http.Handler
 	Log         *slog.Logger
+	Verifier    core.MediaVerifier
+	Dirs        []string
 }
 
 // registeredRoutes reúne, num único lugar, os handlers acrescentados pelas
@@ -78,6 +86,7 @@ func (a *App) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/dashboard/summary", a.handleDashboardSummary)
 	mux.HandleFunc("GET /api/jobs", a.handleListJobs)
 	mux.HandleFunc("GET /api/jobs/{id}", a.handleGetJob)
+	mux.HandleFunc("POST /api/health-check", a.handleHealthCheck)
 	mux.HandleFunc("GET /api/events", a.Broadcaster.ServeHTTP)
 	a.registerPhaseRoutes(mux)
 	mux.Handle("/", a.Assets)
