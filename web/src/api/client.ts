@@ -32,6 +32,31 @@ async function getJSON<T>(path: string): Promise<T> {
   }
 }
 
+/** POST genérico sem corpo de requisição (só decodifica a resposta JSON). */
+async function postJSON<T>(path: string): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(path, { method: "POST", headers: { Accept: "application/json" } });
+  } catch {
+    throw new ApiError("Não foi possível contatar o servidor CodecAny.");
+  }
+  if (!res.ok) {
+    let msg = `Requisição falhou (${res.status} ${res.statusText})`;
+    try {
+      const body = (await res.json()) as { error?: string };
+      if (body.error) msg = body.error;
+    } catch {
+      // corpo não é JSON — mantém a mensagem padrão.
+    }
+    throw new ApiError(msg, res.status);
+  }
+  try {
+    return (await res.json()) as T;
+  } catch {
+    throw new ApiError("Resposta do servidor não é um JSON válido.");
+  }
+}
+
 export function getStatus(): Promise<ServerStatus> {
   return getJSON<ServerStatus>("/api/status");
 }
@@ -95,4 +120,43 @@ export function subscribeToEvents(
   }
 
   return () => source.close();
+}
+
+export interface OkResponse {
+  ok: boolean;
+}
+
+export interface ApproveAllResponse {
+  approved: number;
+  errors: string[];
+}
+
+export interface RejectAllResponse {
+  rejected: number;
+  errors: string[];
+}
+
+/** GET /api/staging — jobs em StatusAwaitingApproval (Fase B). */
+export function getStaging(): Promise<Job[]> {
+  return getJSON<Job[]>("/api/staging");
+}
+
+/** POST /api/staging/{id}/approve — comita o output em staging, 404 se o job não existir/não estiver em staging. */
+export function approveJob(id: string): Promise<OkResponse> {
+  return postJSON<OkResponse>(`/api/staging/${encodeURIComponent(id)}/approve`);
+}
+
+/** POST /api/staging/{id}/reject — descarta o output em staging, preservando o original. */
+export function rejectJob(id: string): Promise<OkResponse> {
+  return postJSON<OkResponse>(`/api/staging/${encodeURIComponent(id)}/reject`);
+}
+
+/** POST /api/staging/approve-all — sucesso parcial ainda responde 200 com a lista de erros. */
+export function approveAll(): Promise<ApproveAllResponse> {
+  return postJSON<ApproveAllResponse>("/api/staging/approve-all");
+}
+
+/** POST /api/staging/reject-all — mesma semântica de sucesso parcial de approveAll. */
+export function rejectAll(): Promise<RejectAllResponse> {
+  return postJSON<RejectAllResponse>("/api/staging/reject-all");
 }

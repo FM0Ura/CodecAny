@@ -57,6 +57,7 @@ func (a *App) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/jobs", a.handleListJobs)
 	mux.HandleFunc("GET /api/jobs/{id}", a.handleGetJob)
 	mux.HandleFunc("GET /api/events", a.Broadcaster.ServeHTTP)
+	a.registerStagingRoutes(mux)
 	mux.Handle("/", a.Assets)
 	return mux
 }
