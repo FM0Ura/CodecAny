@@ -27,9 +27,19 @@ type JobEvent struct {
 	Error    string       `json:"error,omitempty"`
 	SizeDiff int64        `json:"size_diff"`
 
-	// Metrics e TargetCodec só são preenchidos em EventJobAwaitingApproval,
-	// para compor o resumo do prompt interativo (tamanhos, economia, codec
-	// alvo) sem precisar consultar o Store de volta.
-	Metrics     SizeMetrics `json:"metrics,omitempty"`
-	TargetCodec string      `json:"target_codec,omitempty"`
+	// Metrics é preenchido em EventJobAwaitingApproval (resumo do prompt
+	// interativo: tamanhos, economia, codec alvo) e em EventJobComplete
+	// (tamanho original/convertido real do job recém-terminado, para
+	// consumidores como o painel de controle). nil nos demais eventos
+	// (Start/Progress/Error) — o tamanho convertido não existe enquanto o
+	// job ainda está em voo. É *SizeMetrics (ponteiro), não SizeMetrics: em
+	// Go, "omitempty" não tem efeito sobre um campo struct por valor (só
+	// sobre tipos "zero-comparable" como ponteiro/slice/map/número/string),
+	// então um SizeMetrics por valor seria sempre serializado no JSON —
+	// mesmo zerado — inclusive em Progress, fazendo o SSE sempre carregar
+	// um bloco de métricas zerado ali (bug encontrado ao testar o Dashboard
+	// do painel de controle: "0 B → 0 B (0.0%)" aparecia durante o
+	// progresso de todo job).
+	Metrics     *SizeMetrics `json:"metrics,omitempty"`
+	TargetCodec string       `json:"target_codec,omitempty"`
 }

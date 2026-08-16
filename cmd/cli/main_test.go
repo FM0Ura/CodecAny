@@ -81,7 +81,7 @@ func TestPrintApprovalSummaryFormatsFields(t *testing.T) {
 		JobID:       "1a418284-aaaa-bbbb-cccc-ddddeeeeffff",
 		FilePath:    "/videos/The Testament of Sister New Devil.mkv",
 		TargetCodec: "av1",
-		Metrics: core.SizeMetrics{
+		Metrics: &core.SizeMetrics{
 			OriginalSizeBytes:   1524000000,
 			ConvertedSizeBytes:  671350000,
 			SavedBytes:          852650000,

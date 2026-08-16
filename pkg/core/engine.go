@@ -421,7 +421,8 @@ loop:
 			"job_id", job.ID, "path", job.Path,
 			"savings_pct", m.CompressionRatioPct, "min_savings_pct", e.integrity.MinSavingPct,
 			"saved_bytes", m.SavedBytes)
-		e.emit(JobEvent{Kind: EventJobComplete, JobID: job.ID, FilePath: job.Path, Driver: job.Driver, Success: false, SizeDiff: m.SavedBytes})
+		e.emit(JobEvent{Kind: EventJobComplete, JobID: job.ID, FilePath: job.Path, Driver: job.Driver,
+			Success: false, SizeDiff: m.SavedBytes, Metrics: &m, TargetCodec: job.Target.VideoCodec})
 		return
 	}
 
@@ -439,7 +440,7 @@ loop:
 		e.log.Info("job aguardando aprovação manual", "job_id", job.ID, "path", job.Path,
 			"saved_bytes", m.SavedBytes, "savings_pct", m.CompressionRatioPct)
 		e.emit(JobEvent{Kind: EventJobAwaitingApproval, JobID: job.ID, FilePath: job.Path,
-			Driver: job.Driver, Metrics: m, TargetCodec: job.Target.VideoCodec})
+			Driver: job.Driver, Metrics: &m, TargetCodec: job.Target.VideoCodec})
 		return
 	}
 
@@ -468,7 +469,8 @@ loop:
 	e.log.Info("job completo", "job_id", job.ID, "path", job.Path, "driver", job.Driver,
 		"saved_bytes", m.SavedBytes, "savings_pct", m.CompressionRatioPct,
 		"duration_ms", time.Since(now).Milliseconds())
-	e.emit(JobEvent{Kind: EventJobComplete, JobID: job.ID, FilePath: job.Path, Driver: job.Driver, Success: true, SizeDiff: m.SavedBytes})
+	e.emit(JobEvent{Kind: EventJobComplete, JobID: job.ID, FilePath: job.Path, Driver: job.Driver,
+		Success: true, SizeDiff: m.SavedBytes, Metrics: &m, TargetCodec: job.Target.VideoCodec})
 }
 
 func (e *Engine) fail(job *Job, msg string) {
@@ -523,7 +525,7 @@ func (e *Engine) ApproveJob(id string) error {
 	e.log.Info("job aprovado e completo", "job_id", job.ID, "path", job.Path,
 		"saved_bytes", job.SizeMetrics.SavedBytes, "savings_pct", job.SizeMetrics.CompressionRatioPct)
 	e.emit(JobEvent{Kind: EventJobComplete, JobID: job.ID, FilePath: job.Path, Driver: job.Driver,
-		Success: true, SizeDiff: job.SizeMetrics.SavedBytes})
+		Success: true, SizeDiff: job.SizeMetrics.SavedBytes, Metrics: &job.SizeMetrics, TargetCodec: job.Target.VideoCodec})
 	return nil
 }
 
@@ -555,7 +557,7 @@ func (e *Engine) RejectJob(id string) error {
 	e.sendWebhook(job, "failed")
 	e.log.Info("job rejeitado pelo usuário", "job_id", job.ID, "path", job.Path)
 	e.emit(JobEvent{Kind: EventJobComplete, JobID: job.ID, FilePath: job.Path, Driver: job.Driver,
-		Success: false, SizeDiff: job.SizeMetrics.SavedBytes})
+		Success: false, SizeDiff: job.SizeMetrics.SavedBytes, Metrics: &job.SizeMetrics, TargetCodec: job.Target.VideoCodec})
 	return nil
 }
 
