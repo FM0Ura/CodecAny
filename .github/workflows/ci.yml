@@ -8,7 +8,7 @@ on:
 
 jobs:
   quality-gate:
-    name: Quality Gate (lint + tests)
+    name: Quality Gate (lint + tests, Go)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,9 +27,40 @@ jobs:
       - name: Tests unitários (mocks)
         run: go test ./... -count=1
 
+  frontend-quality-gate:
+    name: Quality Gate (lint + build, painel web)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '11.11.0'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Instalar dependências
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+      - name: oxlint
+        working-directory: web
+        run: pnpm lint
+      - name: Typecheck + build (tsc + vite)
+        working-directory: web
+        run: pnpm build
+      - name: Verificar que cmd/server/webdist está em sincronia com web/
+        run: |
+          if ! git diff --quiet --exit-code -- cmd/server/webdist; then
+            echo "::error::cmd/server/webdist está desatualizado em relação a web/. Rode 'make gui-build-web' e faça commit do resultado."
+            git status --porcelain -- cmd/server/webdist
+            git diff --stat -- cmd/server/webdist
+            exit 1
+          fi
+
   cross-compile:
     name: Cross-compile (${{ matrix.target }})
-    needs: quality-gate
+    needs: [ quality-gate, frontend-quality-gate ]
     strategy:
       fail-fast: false
       matrix:
@@ -50,18 +81,27 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: 'stable'
-      - name: Build (CGO_ENABLED=0, binário estático)
+      - name: Build CLI (CGO_ENABLED=0, binário estático)
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: '0'
         run: |
-          go build -trimpath -ldflags "-s -w" -o /tmp/codecany/bin/codecany ./cmd/cli
+          EXT=""; [ "${{ matrix.goos }}" = "windows" ] && EXT=".exe"
+          go build -trimpath -ldflags "-s -w" -o /tmp/codecany/bin/codecany$EXT ./cmd/cli
+      - name: Build painel de controle (frontend embutido via go:embed)
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          EXT=""; [ "${{ matrix.goos }}" = "windows" ] && EXT=".exe"
+          go build -trimpath -ldflags "-s -w" -o /tmp/codecany/bin/codecany-server$EXT ./cmd/server
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: codecany-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: /tmp/codecany/bin/codecany
+          path: /tmp/codecany/bin/
 
   release:
     name: Release (SemVer)
