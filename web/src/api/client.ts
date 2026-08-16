@@ -1,4 +1,13 @@
-import type { DashboardSummary, FsBrowseResult, Job, JobEvent, ServerStatus } from "./types";
+import type {
+  DashboardSummary,
+  FsBrowseResult,
+  Job,
+  JobEvent,
+  RuleFile,
+  RuleTestRequest,
+  RuleTestResult,
+  ServerStatus,
+} from "./types";
 
 /**
  * Erro lançado quando uma resposta HTTP não é ok (status fora de 2xx) ou o
@@ -16,51 +25,34 @@ export class ApiError extends Error {
 }
 
 /**
- * Extrai a mensagem de erro do corpo `{"error": "..."}` que
- * writeJSONError (cmd/server/router.go) escreve em toda resposta não-2xx.
- * Cai para uma mensagem genérica se o corpo não for esse shape.
+ * requestJSON centraliza fetch + tratamento de erro para toda a API: em
+ * respostas não-ok, tenta ler `{"error": "..."}` (shape de writeJSONError no
+ * backend, ver cmd/server/router.go) para propagar uma mensagem legível na
+ * UI (ex.: erro de validação de PUT /api/rules) em vez de só o status HTTP.
  */
-async function extractErrorMessage(res: Response): Promise<string> {
-  try {
-    const body = (await res.json()) as { error?: string };
-    if (body?.error) return body.error;
-  } catch {
-    // corpo não é JSON (ou já foi consumido) — mensagem genérica abaixo.
-  }
-  return `Requisição falhou (${res.status} ${res.statusText})`;
-}
-
-async function getJSON<T>(path: string): Promise<T> {
-  let res: Response;
-  try {
-    res = await fetch(path, { headers: { Accept: "application/json" } });
-  } catch {
-    throw new ApiError("Não foi possível contatar o servidor CodecAny.");
-  }
-  if (!res.ok) {
-    throw new ApiError(await extractErrorMessage(res), res.status);
-  }
-  try {
-    return (await res.json()) as T;
-  } catch {
-    throw new ApiError("Resposta do servidor não é um JSON válido.");
-  }
-}
-
-/** POST com corpo JSON opcional, decodificando a resposta como T. */
-async function postJSON<T>(path: string, body?: unknown): Promise<T> {
+async function requestJSON<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
     res = await fetch(path, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+      ...init,
+      headers: {
+        Accept: "application/json",
+        ...(init?.body ? { "Content-Type": "application/json" } : {}),
+        ...init?.headers,
+      },
     });
   } catch {
     throw new ApiError("Não foi possível contatar o servidor CodecAny.");
   }
   if (!res.ok) {
-    throw new ApiError(await extractErrorMessage(res), res.status);
+    let message = `Requisição falhou (${res.status} ${res.statusText})`;
+    try {
+      const body = (await res.json()) as { error?: string };
+      if (body?.error) message = body.error;
+    } catch {
+      // corpo de erro não é JSON — mantém a mensagem genérica de status.
+    }
+    throw new ApiError(message, res.status);
   }
   try {
     return (await res.json()) as T;
@@ -69,17 +61,25 @@ async function postJSON<T>(path: string, body?: unknown): Promise<T> {
   }
 }
 
-/** DELETE sem corpo de resposta relevante. */
-async function del(path: string): Promise<void> {
-  let res: Response;
-  try {
-    res = await fetch(path, { method: "DELETE" });
-  } catch {
-    throw new ApiError("Não foi possível contatar o servidor CodecAny.");
-  }
-  if (!res.ok) {
-    throw new ApiError(await extractErrorMessage(res), res.status);
-  }
+function getJSON<T>(path: string): Promise<T> {
+  return requestJSON<T>(path);
+}
+
+function putJSON<T>(path: string, body: unknown): Promise<T> {
+  return requestJSON<T>(path, { method: "PUT", body: JSON.stringify(body) });
+}
+
+/** POST com corpo JSON opcional, decodificando a resposta como T. */
+function postJSON<T>(path: string, body?: unknown): Promise<T> {
+  return requestJSON<T>(path, {
+    method: "POST",
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+}
+
+/** DELETE decodificando a resposta como T (o backend sempre responde JSON, ver writeJSON). */
+function del<T>(path: string): Promise<T> {
+  return requestJSON<T>(path, { method: "DELETE" });
 }
 
 export function getStatus(): Promise<ServerStatus> {
@@ -147,6 +147,8 @@ export function subscribeToEvents(
   return () => source.close();
 }
 
+// --- Staging/Aprovação (Fase B) ------------------------------------------
+
 export interface OkResponse {
   ok: boolean;
 }
@@ -202,8 +204,8 @@ export function addDir(path: string): Promise<{ path: string }> {
 }
 
 /** Remove um diretório da lista de monitorados. */
-export function removeDir(path: string): Promise<void> {
-  return del(`/api/dirs?path=${encodeURIComponent(path)}`);
+export function removeDir(path: string): Promise<{ status: string }> {
+  return del<{ status: string }>(`/api/dirs?path=${encodeURIComponent(path)}`);
 }
 
 /** Redescobre arquivos já presentes nos diretórios monitorados. */
@@ -219,4 +221,27 @@ export function rescanDirs(): Promise<void> {
 export function browseFs(path: string): Promise<FsBrowseResult> {
   const qs = path ? `?path=${encodeURIComponent(path)}` : "";
   return getJSON<FsBrowseResult>(`/api/fs/browse${qs}`);
+}
+
+// --- Regras/Config (Fase D) -----------------------------------------------
+
+/** GET /api/rules — o RuleFile atualmente em uso pelo servidor. */
+export function getRules(): Promise<RuleFile> {
+  return getJSON<RuleFile>("/api/rules");
+}
+
+/**
+ * PUT /api/rules — envia o RuleFile completo (regras na ordem final
+ * desejada — reordenar é reenviar o array inteiro). Em caso de validação
+ * inválida, o backend responde 400 com `{error}` (propagado como
+ * ApiError.message por requestJSON) e NÃO altera o arquivo em disco.
+ * Retorna o RuleFile persistido (refletindo o hot-reload já aplicado).
+ */
+export function putRules(file: RuleFile): Promise<RuleFile> {
+  return putJSON<RuleFile>("/api/rules", file);
+}
+
+/** POST /api/rules/test — avalia as regras atuais contra `path` ou `media_info`. */
+export function testRule(req: RuleTestRequest): Promise<RuleTestResult> {
+  return postJSON<RuleTestResult>("/api/rules/test", req);
 }

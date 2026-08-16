@@ -35,16 +35,38 @@ type dashboardSummary struct {
 	HWAccel      []core.HWAccelStatus `json:"hwaccel"`
 }
 
-// App agrupa as dependências do roteamento HTTP da Fase A (Engine real,
-// Broadcaster de SSE, configuração ativa, instante de start para uptime_s e
-// o handler dos estáticos embutidos do SPA).
+// App agrupa as dependências do roteamento HTTP (Engine real, Broadcaster de
+// SSE, configuração ativa, instante de start para uptime_s e o handler dos
+// estáticos embutidos do SPA). Rules/Prober foram adicionados na Fase D:
+// Engine só expõe RulesEngine indiretamente (campo privado), e os handlers
+// de GET/PUT /api/rules + POST /api/rules/test precisam falar com o
+// RulesEngine e o MediaProber diretamente (ver cmd/server/main.go::
+// buildEngine).
 type App struct {
 	Engine      *core.Engine
+	Rules       *core.RulesEngine
+	Prober      core.MediaProber
 	Broadcaster *Broadcaster
 	Config      ServerConfig
 	StartedAt   time.Time
 	Assets      http.Handler
 	Log         *slog.Logger
+}
+
+// registeredRoutes reúne, num único lugar, os handlers acrescentados pelas
+// Fases B (staging), C (diretórios) e D (regras) além da API somente-leitura
+// já registrada em routes() — mantém routes() legível conforme mais fases
+// são integradas.
+func (a *App) registerPhaseRoutes(mux *http.ServeMux) {
+	a.registerStagingRoutes(mux)
+	mux.HandleFunc("GET /api/dirs", a.handleListDirs)
+	mux.HandleFunc("POST /api/dirs", a.handleAddDir)
+	mux.HandleFunc("DELETE /api/dirs", a.handleRemoveDir)
+	mux.HandleFunc("POST /api/dirs/rescan", a.handleRescanDirs)
+	mux.HandleFunc("GET /api/fs/browse", a.handleFsBrowse)
+	mux.HandleFunc("GET /api/rules", a.handleGetRules)
+	mux.HandleFunc("PUT /api/rules", a.handlePutRules)
+	mux.HandleFunc("POST /api/rules/test", a.handleTestRule)
 }
 
 // routes registra as rotas da Fase A (API somente-leitura + SSE + estáticos)
@@ -57,12 +79,7 @@ func (a *App) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/jobs", a.handleListJobs)
 	mux.HandleFunc("GET /api/jobs/{id}", a.handleGetJob)
 	mux.HandleFunc("GET /api/events", a.Broadcaster.ServeHTTP)
-	a.registerStagingRoutes(mux)
-	mux.HandleFunc("GET /api/dirs", a.handleListDirs)
-	mux.HandleFunc("POST /api/dirs", a.handleAddDir)
-	mux.HandleFunc("DELETE /api/dirs", a.handleRemoveDir)
-	mux.HandleFunc("POST /api/dirs/rescan", a.handleRescanDirs)
-	mux.HandleFunc("GET /api/fs/browse", a.handleFsBrowse)
+	a.registerPhaseRoutes(mux)
 	mux.Handle("/", a.Assets)
 	return mux
 }

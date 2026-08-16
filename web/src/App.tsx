@@ -5,6 +5,7 @@ import { Queue } from "./routes/Queue";
 import { Approval } from "./routes/Approval";
 import { Directories } from "./routes/Directories";
 import { Placeholder } from "./routes/Placeholder";
+import { Rules } from "./routes/Rules";
 import { DashboardSummaryProvider } from "./context/DashboardSummaryContext";
 
 export default function App() {
@@ -16,7 +17,7 @@ export default function App() {
           <Route path="fila" element={<Queue />} />
           <Route path="aprovacao" element={<Approval />} />
           <Route path="diretorios" element={<Directories />} />
-          <Route path="regras" element={<Placeholder screen="Regras" phase="Fase D" />} />
+          <Route path="regras" element={<Rules />} />
           <Route
             path="health-check"
             element={<Placeholder screen="Health Check" phase="Fase E" />}

@@ -748,6 +748,23 @@ func (e *Engine) GetJob(id string) (*Job, error) {
 	return e.store.FindByID(id)
 }
 
+// ReloadRules relê `path` e, se válido, troca atomicamente (sem lock, ver
+// RulesEngine.Reload) o casamento de regras usado por HandleDiscovered daqui
+// em diante — sem reiniciar o processo. Restrito por design a Rules +
+// Global.Defaults (item 4 da tabela de mudanças do core): staging_dir,
+// space_saving, hwaccel_limits, notifications e default_driver continuam os
+// valores capturados uma única vez em NewEngine (e.staging/e.integrity/
+// e.hwSemaphores/e.webhook) — mudá-los exige reiniciar o servidor, porque
+// recalculá-los em runtime é arriscado (ex.: mudar staging_dir no meio de um
+// job cujo Cleanup foi reconstruído deterministicamente a partir de
+// e.staging). Jobs já em voo (runJob) não são afetados: eles carregam seu
+// próprio job.Target, resolvido no momento de HandleDiscovered, ANTES do
+// job ser enfileirado — só o PRÓXIMO HandleDiscovered enxerga as regras
+// novas.
+func (e *Engine) ReloadRules(path string) error {
+	return e.rules.Reload(path)
+}
+
 // Shutdown encerra o watcher e o store. Antes disso, aguarda (com timeout
 // limitado) os webhooks pendentes terminarem, sem bloquear indefinidamente
 // caso o endpoint configurado esteja fora do ar.

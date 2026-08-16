@@ -110,6 +110,8 @@ func newTestServerWithProber(t *testing.T, prober core.MediaProber) *testServer 
 
 	app := &App{
 		Engine:      eng,
+		Rules:       rules,
+		Prober:      fakeProber{},
 		Broadcaster: broadcaster,
 		Config: ServerConfig{
 			Addr:      "127.0.0.1:8383",

@@ -1,10 +1,14 @@
 package core
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // writeRules grava um arquivo de regras temporário e devolve o caminho.
@@ -547,4 +551,209 @@ rules:
 	if spec2.VideoHWAccel != "nvenc" {
 		t.Errorf("esperava hwaccel específico 'nvenc', obteve %q", spec2.VideoHWAccel)
 	}
+}
+
+// TestItemMarshalJSONRoundTrip cobre o item 1 da tabela de mudanças do core:
+// um Item com exatamente um valor deve round-tripar como escalar JSON (ex.:
+// "h264"), NÃO como array de um elemento ({"Values":["h264"]} é o shape
+// quebrado que existia antes do MarshalJSON); um Item com múltiplos valores
+// deve round-tripar como array; um Item vazio (coringa) round-tripa como
+// string vazia e continua vazio depois de desserializado de volta.
+func TestItemMarshalJSONRoundTrip(t *testing.T) {
+	cases := []struct {
+		name       string
+		item       Item
+		wantJSON   string
+		wantValues []string
+	}{
+		{"escalar único", Item{Values: []string{"h264"}}, `"h264"`, []string{"h264"}},
+		{"lista com múltiplos", Item{Values: []string{"h264", "hevc"}}, `["h264","hevc"]`, []string{"h264", "hevc"}},
+		{"vazio (coringa)", Item{}, `""`, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := json.Marshal(tc.item)
+			if err != nil {
+				t.Fatalf("Marshal: %v", err)
+			}
+			if string(data) != tc.wantJSON {
+				t.Fatalf("Marshal(%+v) = %s, want %s (escalar único não deve virar array de 1 elemento)", tc.item, data, tc.wantJSON)
+			}
+			var back Item
+			if err := json.Unmarshal(data, &back); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			if !reflect.DeepEqual(back.Values, tc.wantValues) {
+				t.Errorf("round-trip Values = %#v, want %#v", back.Values, tc.wantValues)
+			}
+		})
+	}
+}
+
+// TestItemMarshalYAMLRoundTrip espelha TestItemMarshalJSONRoundTrip para o
+// encoder YAML (gopkg.in/yaml.v3) — mesmo contrato: escalar único → escalar,
+// não sequência de 1 elemento.
+func TestItemMarshalYAMLRoundTrip(t *testing.T) {
+	cases := []struct {
+		name       string
+		item       Item
+		wantValues []string
+	}{
+		{"escalar único", Item{Values: []string{"h264"}}, []string{"h264"}},
+		{"lista com múltiplos", Item{Values: []string{"h264", "hevc"}}, []string{"h264", "hevc"}},
+		{"vazio (coringa)", Item{}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := yaml.Marshal(tc.item)
+			if err != nil {
+				t.Fatalf("Marshal: %v", err)
+			}
+			if len(tc.item.Values) == 1 {
+				// Escalar único deve serializar como escalar YAML puro (uma
+				// linha, sem marcador de sequência "- "), não como lista de 1.
+				if strings.Contains(string(data), "- ") {
+					t.Fatalf("Marshal(%+v) = %q, não deveria conter marcador de sequência YAML", tc.item, data)
+				}
+			}
+			var back Item
+			if err := yaml.Unmarshal(data, &back); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			if !reflect.DeepEqual(back.Values, tc.wantValues) {
+				t.Errorf("round-trip Values = %#v, want %#v", back.Values, tc.wantValues)
+			}
+		})
+	}
+}
+
+// TestRuleEnabledSkipped cobre o item 2 da tabela de mudanças do core: uma
+// regra com `enabled: false` explícito nunca casa em Evaluate (mesmo que
+// seus critérios de match combinem com a mídia) nem aparece como candidata
+// em DescribeMiss — nem como falha, nem como "OK". Uma regra SEM o campo
+// (nil) continua habilitada por padrão (retrocompat).
+func TestRuleEnabledSkipped(t *testing.T) {
+	content := `
+version: 1
+global: { staging_dir: /tmp/xs }
+rules:
+  - name: "desabilitada"
+    enabled: false
+    match:
+      video: { codec: h264 }
+    convert:
+      video: { codec: av1 }
+  - name: "habilitada (sem campo, retrocompat)"
+    match:
+      video: { codec: h264 }
+    convert:
+      video: { codec: hevc }
+`
+	r := mustEngine(t, content)
+	mi := MediaInfo{Container: "mkv", VideoCodec: "h264"}
+
+	outcome, spec, err := r.Evaluate(mi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome != OutcomeConvert {
+		t.Fatalf("esperava convert (via segunda regra, habilitada); obteve %v", outcome)
+	}
+	if spec.VideoCodec != "hevc" {
+		t.Fatalf("regra desabilitada não deveria ter sido escolhida; esperava hevc (2ª regra), obteve %q", spec.VideoCodec)
+	}
+
+	miss := r.DescribeMiss(mi)
+	if strings.Contains(miss, "desabilitada") {
+		t.Errorf("DescribeMiss não deveria mencionar a regra desabilitada; obteve: %s", miss)
+	}
+	if !strings.Contains(miss, "habilitada (sem campo, retrocompat): OK") {
+		t.Errorf("DescribeMiss deveria marcar a regra habilitada como OK; obteve: %s", miss)
+	}
+}
+
+// TestRuleFileValidate cobre o item 3 da tabela de mudanças do core: casos
+// válidos e cada uma das condições de invalidez descritas na proposta
+// (regras vazias, action inválida, nome vazio, min_saving_pct fora de
+// [0,100], default_driver vazio).
+func TestRuleFileValidate(t *testing.T) {
+	validBase := func() RuleFile {
+		return RuleFile{
+			Version: 1,
+			Global: RuleFileGlobal{
+				DefaultDriver: "ffmpeg",
+				SpaceSaving:   SpaceSavingPolicy{MinSavingPct: 15},
+			},
+			Rules: []Rule{
+				{Name: "r1", Action: ActionConvert, Convert: ConvertSpec{Video: &TargetSpecVideo{Codec: "hevc"}}},
+			},
+		}
+	}
+
+	t.Run("válido", func(t *testing.T) {
+		if err := validBase().Validate(); err != nil {
+			t.Errorf("esperava válido, obteve erro: %v", err)
+		}
+	})
+
+	t.Run("válido com action skip e min_saving_pct nos extremos", func(t *testing.T) {
+		f := validBase()
+		f.Rules[0].Action = ActionSkip
+		f.Global.SpaceSaving.MinSavingPct = 0
+		if err := f.Validate(); err != nil {
+			t.Errorf("esperava válido (0 é extremo válido de [0,100]), obteve erro: %v", err)
+		}
+		f.Global.SpaceSaving.MinSavingPct = 100
+		if err := f.Validate(); err != nil {
+			t.Errorf("esperava válido (100 é extremo válido de [0,100]), obteve erro: %v", err)
+		}
+	})
+
+	t.Run("rules vazio", func(t *testing.T) {
+		f := validBase()
+		f.Rules = nil
+		if err := f.Validate(); err == nil {
+			t.Error("esperava erro para rules vazio")
+		}
+	})
+
+	t.Run("nome de regra vazio", func(t *testing.T) {
+		f := validBase()
+		f.Rules[0].Name = "   "
+		if err := f.Validate(); err == nil {
+			t.Error("esperava erro para nome de regra vazio")
+		}
+	})
+
+	t.Run("action inválida", func(t *testing.T) {
+		f := validBase()
+		f.Rules[0].Action = "transmogrify"
+		if err := f.Validate(); err == nil {
+			t.Error("esperava erro para action inválida")
+		}
+	})
+
+	t.Run("min_saving_pct negativo", func(t *testing.T) {
+		f := validBase()
+		f.Global.SpaceSaving.MinSavingPct = -1
+		if err := f.Validate(); err == nil {
+			t.Error("esperava erro para min_saving_pct negativo")
+		}
+	})
+
+	t.Run("min_saving_pct acima de 100", func(t *testing.T) {
+		f := validBase()
+		f.Global.SpaceSaving.MinSavingPct = 101
+		if err := f.Validate(); err == nil {
+			t.Error("esperava erro para min_saving_pct > 100")
+		}
+	})
+
+	t.Run("default_driver vazio", func(t *testing.T) {
+		f := validBase()
+		f.Global.DefaultDriver = ""
+		if err := f.Validate(); err == nil {
+			t.Error("esperava erro para default_driver vazio")
+		}
+	})
 }

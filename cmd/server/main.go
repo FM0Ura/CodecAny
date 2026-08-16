@@ -43,7 +43,7 @@ func main() {
 	}
 
 	events := make(chan core.JobEvent, 256)
-	eng, err := buildEngine(cfg.DBPath, cfg.RulesPath, cfg.Workers, events, log)
+	eng, rules, prober, err := buildEngine(cfg.DBPath, cfg.RulesPath, cfg.Workers, events, log)
 	if err != nil {
 		logger.Fatal(log, err)
 	}
@@ -106,6 +106,8 @@ func main() {
 
 	app := &App{
 		Engine:      eng,
+		Rules:       rules,
+		Prober:      prober,
 		Broadcaster: broadcaster,
 		Config:      cfg,
 		StartedAt:   time.Now(),
@@ -147,24 +149,33 @@ func main() {
 }
 
 // buildEngine monta Store+RulesEngine+Engine com os adapters ffmpeg —
-// mesmo padrão de cmd/cli/main.go::buildEngine.
-func buildEngine(storePath, rulesPath string, workers int, events chan core.JobEvent, log *slog.Logger) (*core.Engine, error) {
+// mesmo padrão de cmd/cli/main.go::buildEngine. Retorna também o
+// *core.RulesEngine e o core.MediaProber usados na composição: o Engine só
+// os expõe indiretamente (campos privados), mas o App (Fase D — regras) e o
+// handler POST /api/rules/test precisam deles diretamente (GET/PUT /api/
+// rules e a sondagem sob demanda de um path arbitrário).
+func buildEngine(storePath, rulesPath string, workers int, events chan core.JobEvent, log *slog.Logger) (*core.Engine, *core.RulesEngine, core.MediaProber, error) {
 	s, err := core.NewStore(storePath)
 	if err != nil {
-		return nil, fmt.Errorf("store: %w", err)
+		return nil, nil, nil, fmt.Errorf("store: %w", err)
 	}
 	re, err := core.NewRulesEngine(rulesPath)
 	if err != nil {
-		return nil, fmt.Errorf("rules: %w", err)
+		return nil, nil, nil, fmt.Errorf("rules: %w", err)
 	}
-	return core.NewEngine(core.EngineDeps{
+	prober := ffmpeg.NewProber()
+	eng, err := core.NewEngine(core.EngineDeps{
 		Store:    s,
 		Rules:    re,
-		Prober:   ffmpeg.NewProber(),
+		Prober:   prober,
 		Verifier: ffmpeg.NewVerifier(),
 		Engines:  []core.TranscoderEngine{ffmpeg.NewTranscode()},
 		Workers:  workers,
 		Events:   events,
 		Logger:   log,
 	})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return eng, re, prober, nil
 }

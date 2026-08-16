@@ -121,3 +121,130 @@ export interface FsBrowseResult {
   parent: string;
   entries: FsBrowseEntry[];
 }
+
+// ---------------------------------------------------------------------
+// Regras (Fase D — pkg/core/rules.go). Nomes de campo em snake_case
+// combinam 1:1 com as tags JSON de core.RuleFile/Rule/Match/ConvertSpec/etc.
+// ---------------------------------------------------------------------
+
+/**
+ * Espelha core.Item: aceita um valor escalar OU uma lista na API (o backend
+ * agora tem MarshalJSON — Item.go item 1 da Fase D — que serializa um único
+ * valor como escalar puro, não array de 1 elemento). O frontend normaliza
+ * para string[] internamente ao carregar (ver normalizeRuleFile em
+ * routes/Rules.tsx) — ambas as formas são aceitas de volta pelo backend na
+ * hora de desserializar (UnmarshalJSON aceita escalar ou lista), então
+ * sempre reenviar como array é seguro.
+ */
+export type RuleItem = string | string[];
+
+export interface MatchVideo {
+  codec: RuleItem;
+  min_height: number;
+  max_height: number;
+  min_bitrate_kbps: number;
+}
+
+export interface MatchAudio {
+  codec: RuleItem;
+}
+
+export interface Match {
+  container: RuleItem;
+  video: MatchVideo;
+  audio: MatchAudio;
+}
+
+export type RuleAction = "convert" | "skip" | "";
+
+export interface RuleTargetVideo {
+  codec: string;
+  crf: number;
+  preset: string;
+  lossless: boolean | null;
+  hwaccel: string;
+  max_height: number;
+}
+
+export interface RuleTargetAudio {
+  codec: string;
+  bitrate: string;
+}
+
+export interface ConvertSpec {
+  video: RuleTargetVideo | null;
+  audio: RuleTargetAudio | null;
+  container: string;
+}
+
+export interface Rule {
+  name: string;
+  /** null/undefined = habilitada (retrocompat); só `false` desabilita. */
+  enabled: boolean | null;
+  match: Match;
+  action: RuleAction;
+  convert: ConvertSpec;
+  /** Override por regra do default global de auto-aprovação. */
+  auto_approve: boolean | null;
+}
+
+export interface RuleDefaults {
+  video: {
+    codec: string;
+    crf: number;
+    preset: string;
+    lossless: boolean | null;
+    hwaccel: string;
+  };
+  audio: {
+    codec: string;
+    bitrate: string;
+  };
+  container: string;
+  auto_approve: boolean | null;
+}
+
+export interface SpaceSavingPolicy {
+  min_saving_pct: number;
+  fallback_action: string;
+}
+
+export interface WebhookConfig {
+  webhook_url: string;
+  events: string[] | null;
+}
+
+export interface RuleFileGlobal {
+  default_driver: string;
+  staging_dir: string;
+  space_saving: SpaceSavingPolicy;
+  defaults: RuleDefaults;
+  notifications: WebhookConfig;
+  hwaccel_limits: Record<string, number> | null;
+}
+
+export interface IgnoreRules {
+  dir_contains: string[] | null;
+  file_suffix: string[] | null;
+  min_size_bytes: number;
+}
+
+export interface RuleFile {
+  version: number;
+  global: RuleFileGlobal;
+  rules: Rule[];
+  ignore: IgnoreRules;
+}
+
+export interface RuleTestRequest {
+  path?: string;
+  media_info?: MediaInfo;
+}
+
+export type RuleOutcome = "convert" | "skip" | "skip_no_rule";
+
+export interface RuleTestResult {
+  outcome: RuleOutcome;
+  target_spec: TargetSpec;
+  describe_miss: string;
+}
