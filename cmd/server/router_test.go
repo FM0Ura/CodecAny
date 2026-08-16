@@ -99,6 +99,8 @@ func newTestServer(t *testing.T) *testServer {
 
 	app := &App{
 		Engine:      eng,
+		Rules:       rules,
+		Prober:      fakeProber{},
 		Broadcaster: broadcaster,
 		Config: ServerConfig{
 			Addr:      "127.0.0.1:8383",

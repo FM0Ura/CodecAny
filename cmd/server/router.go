@@ -35,11 +35,17 @@ type dashboardSummary struct {
 	HWAccel      []core.HWAccelStatus `json:"hwaccel"`
 }
 
-// App agrupa as dependências do roteamento HTTP da Fase A (Engine real,
-// Broadcaster de SSE, configuração ativa, instante de start para uptime_s e
-// o handler dos estáticos embutidos do SPA).
+// App agrupa as dependências do roteamento HTTP (Engine real, Broadcaster de
+// SSE, configuração ativa, instante de start para uptime_s e o handler dos
+// estáticos embutidos do SPA). Rules/Prober foram adicionados na Fase D:
+// Engine só expõe RulesEngine indiretamente (campo privado), e os handlers
+// de GET/PUT /api/rules + POST /api/rules/test precisam falar com o
+// RulesEngine e o MediaProber diretamente (ver cmd/server/main.go::
+// buildEngine).
 type App struct {
 	Engine      *core.Engine
+	Rules       *core.RulesEngine
+	Prober      core.MediaProber
 	Broadcaster *Broadcaster
 	Config      ServerConfig
 	StartedAt   time.Time
@@ -57,6 +63,9 @@ func (a *App) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/jobs", a.handleListJobs)
 	mux.HandleFunc("GET /api/jobs/{id}", a.handleGetJob)
 	mux.HandleFunc("GET /api/events", a.Broadcaster.ServeHTTP)
+	mux.HandleFunc("GET /api/rules", a.handleGetRules)
+	mux.HandleFunc("PUT /api/rules", a.handlePutRules)
+	mux.HandleFunc("POST /api/rules/test", a.handleTestRule)
 	mux.Handle("/", a.Assets)
 	return mux
 }
