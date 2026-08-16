@@ -151,7 +151,7 @@ func (ts *testServer) seedStagedJob(t *testing.T, stagingDir, name string, origS
 	return job
 }
 
-func postJSON(t *testing.T, url string) *http.Response {
+func postJSONNoBody(t *testing.T, url string) *http.Response {
 	t.Helper()
 	resp, err := http.Post(url, "application/json", nil)
 	if err != nil {
@@ -216,7 +216,7 @@ func TestHandleApproveJobSuccess(t *testing.T) {
 	srv := httptest.NewServer(ts.app.Handler())
 	defer srv.Close()
 
-	resp := postJSON(t, srv.URL+"/api/staging/"+job.ID+"/approve")
+	resp := postJSONNoBody(t, srv.URL+"/api/staging/"+job.ID+"/approve")
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -261,7 +261,7 @@ func TestHandleRejectJobSuccess(t *testing.T) {
 	srv := httptest.NewServer(ts.app.Handler())
 	defer srv.Close()
 
-	resp := postJSON(t, srv.URL+"/api/staging/"+job.ID+"/reject")
+	resp := postJSONNoBody(t, srv.URL+"/api/staging/"+job.ID+"/reject")
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -298,7 +298,7 @@ func TestHandleApproveJobNotFound(t *testing.T) {
 	srv := httptest.NewServer(ts.app.Handler())
 	defer srv.Close()
 
-	resp := postJSON(t, srv.URL+"/api/staging/nao-existe/approve")
+	resp := postJSONNoBody(t, srv.URL+"/api/staging/nao-existe/approve")
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", resp.StatusCode)
@@ -310,7 +310,7 @@ func TestHandleRejectJobNotFound(t *testing.T) {
 	srv := httptest.NewServer(ts.app.Handler())
 	defer srv.Close()
 
-	resp := postJSON(t, srv.URL+"/api/staging/nao-existe/reject")
+	resp := postJSONNoBody(t, srv.URL+"/api/staging/nao-existe/reject")
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", resp.StatusCode)
@@ -327,7 +327,7 @@ func TestHandleApproveJobWrongStatus(t *testing.T) {
 	srv := httptest.NewServer(ts.app.Handler())
 	defer srv.Close()
 
-	resp := postJSON(t, srv.URL+"/api/staging/"+job.ID+"/approve")
+	resp := postJSONNoBody(t, srv.URL+"/api/staging/"+job.ID+"/approve")
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", resp.StatusCode)
@@ -344,7 +344,7 @@ func TestHandleApproveAll(t *testing.T) {
 	srv := httptest.NewServer(ts.app.Handler())
 	defer srv.Close()
 
-	resp := postJSON(t, srv.URL+"/api/staging/approve-all")
+	resp := postJSONNoBody(t, srv.URL+"/api/staging/approve-all")
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -379,7 +379,7 @@ func TestHandleRejectAll(t *testing.T) {
 	srv := httptest.NewServer(ts.app.Handler())
 	defer srv.Close()
 
-	resp := postJSON(t, srv.URL+"/api/staging/reject-all")
+	resp := postJSONNoBody(t, srv.URL+"/api/staging/reject-all")
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -412,7 +412,7 @@ func TestHandleApproveAllEmpty(t *testing.T) {
 	srv := httptest.NewServer(ts.app.Handler())
 	defer srv.Close()
 
-	resp := postJSON(t, srv.URL+"/api/staging/approve-all")
+	resp := postJSONNoBody(t, srv.URL+"/api/staging/approve-all")
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
