@@ -49,12 +49,26 @@ func main() {
 	}
 	eng.SetScanInterval(scanEvery)
 
-	// -dir (Fase A, efêmero — ver Fase C para persistência via
-	// watched_dirs): mesmo padrão de cmd/cli, só para já ter algo
-	// rodando/testável localmente sem esperar a API de diretórios.
+	// -dir (Fase A, efêmero — nunca toca a tabela watched_dirs): mesmo
+	// padrão de cmd/cli, só para já ter algo rodando/testável localmente
+	// sem depender da API de diretórios.
 	for _, d := range dirs {
 		if err := eng.WatchDir(d); err != nil {
 			log.Error("falha ao monitorar diretório", "dir", d, "error", err.Error())
+		}
+	}
+
+	// Diretórios monitorados persistidos (Fase C): a partir de agora o
+	// painel de controle é a fonte de verdade — carrega o que foi salvo via
+	// API em execuções anteriores (tabela watched_dirs) e começa a
+	// monitorá-los, além do -dir efêmero acima.
+	persistedDirs, err := eng.ListWatchedDirs()
+	if err != nil {
+		log.Error("falha ao listar diretórios monitorados persistidos", "error", err.Error())
+	}
+	for _, d := range persistedDirs {
+		if err := eng.WatchDir(d); err != nil {
+			log.Error("falha ao monitorar diretório persistido", "dir", d, "error", err.Error())
 		}
 	}
 
