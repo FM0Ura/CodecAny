@@ -226,6 +226,68 @@ func (w *Watcher) Remove(path string) {
 	w.mu.Unlock()
 }
 
+// RemoveDir para de monitorar dir (e todos os seus descendentes) e purga
+// qualquer rastreio pendente/já promovido sob esse caminho. Usado pelo
+// painel de controle (Fase C — Diretórios Monitorados) quando o usuário
+// remove um diretório da lista.
+//
+// Refaz filepath.Walk(dir) NO MOMENTO da remoção, em vez de reusar um
+// snapshot de subpastas capturado quando AddDir foi chamado: scan()
+// registra novas subpastas no fsnotify.Watcher conforme elas são criadas
+// (w.fsw.Add em scan()), então a árvore real pode ter crescido desde o
+// AddDir original — um snapshot antigo deixaria subpastas novas ainda
+// registradas no fsnotify após a remoção.
+//
+// Se dir não existir mais em disco (ex.: apagado externamente), a
+// varredura falha silenciosamente (só loga) mas w.dirs/w.pending/w.scanned
+// ainda são purgados — a remoção lógica não depende do diretório existir
+// fisicamente.
+func (w *Watcher) RemoveDir(dir string) error {
+	dir = filepath.Clean(dir)
+
+	walkErr := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			w.logger.Warn("falha ao acessar caminho durante remoção", "path", path, "error", err.Error())
+			return nil
+		}
+		if !info.IsDir() {
+			return nil
+		}
+		if rmErr := w.fsw.Remove(path); rmErr != nil {
+			// Comum e inofensivo: o path pode já ter sido removido do
+			// fsnotify por outro evento (ex.: rename/delete externo).
+			w.logger.Debug("falha ao remover diretório do watcher", "dir", path, "error", rmErr.Error())
+		}
+		return nil
+	})
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	filtered := w.dirs[:0]
+	for _, d := range w.dirs {
+		if d != dir {
+			filtered = append(filtered, d)
+		}
+	}
+	w.dirs = filtered
+
+	prefix := dir + string(filepath.Separator)
+	for p := range w.pending {
+		if p == dir || strings.HasPrefix(p, prefix) {
+			delete(w.pending, p)
+		}
+	}
+	for p := range w.scanned {
+		if p == dir || strings.HasPrefix(p, prefix) {
+			delete(w.scanned, p)
+		}
+	}
+
+	w.logger.Info("diretório removido do monitoramento", "dir", dir)
+	return walkErr
+}
+
 var supportedExts = map[string]bool{
 	".mkv": true, ".mp4": true, ".avi": true, ".mov": true,
 	".webm": true, ".ts": true, ".m2ts": true, ".m4v": true,

@@ -1,0 +1,254 @@
+.directories {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.directories__banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.9rem 1.1rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--danger-border);
+  background: var(--danger-fill);
+  color: var(--danger);
+  font-size: 13px;
+}
+
+.directories__banner button {
+  display: flex;
+  color: var(--danger);
+}
+
+.directories__panel-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.directories__actions {
+  display: flex;
+  gap: 0.6rem;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.directories__empty-note {
+  color: var(--text-faint);
+  font-size: 13px;
+}
+
+.directories__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+/* --- Botões (escopo local: sem sistema global de .btn ainda) ------------ */
+
+.btn {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0.55em 1em;
+  border-radius: var(--radius);
+  border: 1px solid transparent;
+  white-space: nowrap;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.btn--ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+  border-color: var(--border);
+  color: var(--text-muted);
+}
+
+.btn--ghost:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.btn--accent {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.btn--accent:hover:not(:disabled) {
+  background: var(--accent-dim);
+  border-color: var(--accent-dim);
+  color: var(--text);
+}
+
+/* --- Linha de diretório monitorado --------------------------------------- */
+
+.dir-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.65rem 0.8rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+}
+
+.dir-row__path {
+  font-size: 12.5px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.dir-row__remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.35em;
+  border-radius: var(--radius);
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+
+.dir-row__remove:hover:not(:disabled) {
+  color: var(--danger);
+  background: var(--danger-fill);
+}
+
+.dir-row__remove:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* --- Modal navegador de diretórios --------------------------------------- */
+
+.dir-modal__overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 7, 15, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+  padding: 1.5rem;
+}
+
+.dir-modal {
+  width: 100%;
+  max-width: 560px;
+  max-height: min(640px, 85vh);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+}
+
+.dir-modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.1rem;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.dir-modal__title {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+}
+
+.dir-modal__close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.3em;
+  border-radius: var(--radius);
+  color: var(--text-faint);
+}
+
+.dir-modal__close:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+.dir-modal__path {
+  margin: 0.9rem 1.1rem 0;
+  padding: 0.5rem 0.7rem;
+  background: var(--ground);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  font-size: 12.5px;
+  color: var(--signal);
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.dir-modal__error {
+  margin: 0.7rem 1.1rem 0;
+  padding: 0.6rem 0.8rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--danger-border);
+  background: var(--danger-fill);
+  color: var(--danger);
+  font-size: 12.5px;
+}
+
+.dir-modal__list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.9rem 1.1rem;
+  min-height: 160px;
+}
+
+.dir-modal__entry {
+  display: flex;
+  align-items: center;
+  gap: 0.6em;
+  padding: 0.5rem 0.6rem;
+  border-radius: var(--radius);
+  color: var(--text);
+  text-align: left;
+}
+
+.dir-modal__entry:hover {
+  background: var(--surface-2);
+  color: var(--accent);
+}
+
+.dir-modal__entry-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.dir-modal__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 1rem 1.1rem;
+  border-top: 1px solid var(--border-soft);
+}

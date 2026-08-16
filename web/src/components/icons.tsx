@@ -82,3 +82,43 @@ export function IconHistory(props: SVGProps<SVGSVGElement>) {
     </svg>
   );
 }
+
+// Ícones auxiliares da tela Diretórios Monitorados (Fase C) — mesmo estilo
+// linear/sem emoji dos ícones de navegação acima.
+
+export function IconTrash(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M4 5.5h12" />
+      <path d="M8 5.5V4c0-.6.4-1 1-1h2c.6 0 1 .4 1 1v1.5" />
+      <path d="M5.3 5.5l.6 10c.1.9.8 1.5 1.6 1.5h4.9c.8 0 1.5-.6 1.6-1.5l.6-10" />
+      <path d="M8.4 8.5v6" />
+      <path d="M11.6 8.5v6" />
+    </svg>
+  );
+}
+
+export function IconClose(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M4.5 4.5l11 11" />
+      <path d="M15.5 4.5l-11 11" />
+    </svg>
+  );
+}
+
+export function IconFolder(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M2.5 5.2c0-.7.6-1.2 1.2-1.2h3.4l1.6 1.8h7.1c.7 0 1.2.6 1.2 1.2v8.3c0 .7-.6 1.2-1.2 1.2H3.7c-.7 0-1.2-.6-1.2-1.2V5.2z" />
+    </svg>
+  );
+}
+
+export function IconArrowLeft(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M12.5 4.5l-6 5.5 6 5.5" />
+    </svg>
+  );
+}

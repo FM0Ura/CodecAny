@@ -58,6 +58,11 @@ func (a *App) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/jobs/{id}", a.handleGetJob)
 	mux.HandleFunc("GET /api/events", a.Broadcaster.ServeHTTP)
 	a.registerStagingRoutes(mux)
+	mux.HandleFunc("GET /api/dirs", a.handleListDirs)
+	mux.HandleFunc("POST /api/dirs", a.handleAddDir)
+	mux.HandleFunc("DELETE /api/dirs", a.handleRemoveDir)
+	mux.HandleFunc("POST /api/dirs/rescan", a.handleRescanDirs)
+	mux.HandleFunc("GET /api/fs/browse", a.handleFsBrowse)
 	mux.Handle("/", a.Assets)
 	return mux
 }

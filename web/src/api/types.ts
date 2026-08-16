@@ -105,3 +105,19 @@ export interface ServerStatus {
   rules_path: string;
   workers: number;
 }
+
+/** Uma subpasta listada por GET /api/fs/browse (só diretórios). */
+export interface FsBrowseEntry {
+  name: string;
+  path: string;
+}
+
+/**
+ * Shape de GET /api/fs/browse?path=. `parent` é "" quando `path` já é a
+ * raiz do filesystem (sem "voltar" possível).
+ */
+export interface FsBrowseResult {
+  path: string;
+  parent: string;
+  entries: FsBrowseEntry[];
+}

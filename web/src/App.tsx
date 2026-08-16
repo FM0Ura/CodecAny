@@ -3,6 +3,7 @@ import { AppLayout } from "./components/AppLayout";
 import { Dashboard } from "./routes/Dashboard";
 import { Queue } from "./routes/Queue";
 import { Approval } from "./routes/Approval";
+import { Directories } from "./routes/Directories";
 import { Placeholder } from "./routes/Placeholder";
 import { DashboardSummaryProvider } from "./context/DashboardSummaryContext";
 
@@ -14,10 +15,7 @@ export default function App() {
           <Route index element={<Dashboard />} />
           <Route path="fila" element={<Queue />} />
           <Route path="aprovacao" element={<Approval />} />
-          <Route
-            path="diretorios"
-            element={<Placeholder screen="Diretórios Monitorados" phase="Fase C" />}
-          />
+          <Route path="diretorios" element={<Directories />} />
           <Route path="regras" element={<Placeholder screen="Regras" phase="Fase D" />} />
           <Route
             path="health-check"

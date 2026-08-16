@@ -654,6 +654,79 @@ func (e *Engine) StartWatch() {
 	}
 }
 
+// AddWatchedDir persiste path na tabela watched_dirs E passa a monitorá-lo
+// via Watcher.AddDir (WatchDir) — usado pelo painel de controle (Fase C)
+// para que diretórios adicionados pela UI sobrevivam a reinícios do
+// servidor. Diferente de WatchDir puro (usado por -dir do cmd/cli), que é
+// efêmero e nunca toca o Store.
+func (e *Engine) AddWatchedDir(path string) error {
+	if e.store == nil {
+		return fmt.Errorf("store não inicializado")
+	}
+	if err := e.store.AddWatchedDir(path); err != nil {
+		return fmt.Errorf("persistir diretório monitorado: %w", err)
+	}
+	if err := e.WatchDir(path); err != nil {
+		return fmt.Errorf("monitorar diretório: %w", err)
+	}
+	return nil
+}
+
+// RemoveWatchedDir remove path da tabela watched_dirs E para de monitorá-lo
+// (Watcher.RemoveDir) — operação inversa de AddWatchedDir.
+func (e *Engine) RemoveWatchedDir(path string) error {
+	if e.store == nil {
+		return fmt.Errorf("store não inicializado")
+	}
+	if err := e.store.RemoveWatchedDir(path); err != nil {
+		return fmt.Errorf("remover diretório monitorado: %w", err)
+	}
+	if e.watcher != nil {
+		if err := e.watcher.RemoveDir(path); err != nil {
+			return fmt.Errorf("parar de monitorar diretório: %w", err)
+		}
+	}
+	return nil
+}
+
+// ListWatchedDirs lista os caminhos dos diretórios monitorados persistidos
+// (versão simplificada de Store.ListWatchedDirs, sem os timestamps — o
+// painel de controle só precisa dos paths para listar/remover/rescan).
+func (e *Engine) ListWatchedDirs() ([]string, error) {
+	if e.store == nil {
+		return nil, fmt.Errorf("store não inicializado")
+	}
+	dirs, err := e.store.ListWatchedDirs()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, len(dirs))
+	for i, d := range dirs {
+		out[i] = d.Path
+	}
+	return out, nil
+}
+
+// RescanDirs redescobre arquivos já presentes em todos os diretórios
+// monitorados persistidos, reusando o mesmo par DiscoverFiles+
+// HandleDiscovered de RunOnce (modo one-shot) — útil quando arquivos foram
+// adicionados enquanto o servidor estava fora do ar, ou o watcher perdeu
+// eventos do fsnotify (ex.: cópia em massa via rede).
+func (e *Engine) RescanDirs() error {
+	dirs, err := e.ListWatchedDirs()
+	if err != nil {
+		return err
+	}
+	files, err := DiscoverFiles(dirs)
+	if err != nil {
+		return err
+	}
+	for _, f := range files {
+		e.HandleDiscovered(f)
+	}
+	return nil
+}
+
 // GetTotalSavings delega ao store a consulta consolidada de economias.
 func (e *Engine) GetTotalSavings() (SizeMetrics, error) {
 	if e.store == nil {

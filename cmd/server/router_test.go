@@ -55,6 +55,17 @@ type testServer struct {
 
 func newTestServer(t *testing.T) *testServer {
 	t.Helper()
+	return newTestServerWithProber(t, fakeProber{})
+}
+
+// newTestServerWithProber é a versão parametrizada de newTestServer,
+// permitindo trocar o core.MediaProber usado pelo Engine — necessário para
+// testes que exercitam Engine.HandleDiscovered (ex.: /api/dirs/rescan) e
+// precisam que o probe retorne um MediaInfo que realmente bata com alguma
+// regra da fixture (fakeProber, usado pela maioria dos testes somente-
+// leitura desta fase, devolve um MediaInfo zerado de propósito).
+func newTestServerWithProber(t *testing.T, prober core.MediaProber) *testServer {
+	t.Helper()
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "x.db")
 	rulesPath := filepath.Join(dir, "rules.yaml")
@@ -78,7 +89,7 @@ func newTestServer(t *testing.T) *testServer {
 	eng, err := core.NewEngine(core.EngineDeps{
 		Store:    store,
 		Rules:    rules,
-		Prober:   fakeProber{},
+		Prober:   prober,
 		Verifier: fakeVerifier{},
 		Engines:  []core.TranscoderEngine{fakeTranscoder{}},
 		Workers:  1,

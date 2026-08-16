@@ -3,6 +3,7 @@ package core
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -177,5 +178,126 @@ func TestScanCoversNewSubdir(t *testing.T) {
 
 	if len(got) != 1 || got[0] != f {
 		t.Fatalf("esperava %s promovido, obteve %v", f, got)
+	}
+}
+
+// TestWatcherRemoveDir cobre o item 5 da proposta do painel de controle
+// (Fase C): AddDir → RemoveDir → um arquivo criado DEPOIS da remoção não
+// deve mais ser promovido/descoberto, e o estado interno (w.dirs/w.pending/
+// w.scanned) precisa estar limpo sob o caminho removido.
+func TestWatcherRemoveDir(t *testing.T) {
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.mkv")
+	writeFileSize(t, a, 1000)
+
+	var mu sync.Mutex
+	var got []string
+	w := newTestWatcher(t, dir, func(p string) {
+		mu.Lock()
+		got = append(got, p)
+		mu.Unlock()
+	})
+	if err := w.AddDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	w.scan()
+	time.Sleep(600 * time.Millisecond)
+	w.flushStable()
+
+	mu.Lock()
+	n := len(got)
+	mu.Unlock()
+	if n != 1 || got[0] != a {
+		t.Fatalf("esperava %s promovido antes da remoção, obteve %v", a, got)
+	}
+
+	if err := w.RemoveDir(dir); err != nil {
+		t.Fatalf("RemoveDir: %v", err)
+	}
+
+	w.mu.Lock()
+	if len(w.dirs) != 0 {
+		t.Errorf("w.dirs deveria estar vazio após RemoveDir, obteve %v", w.dirs)
+	}
+	if len(w.scanned) != 0 {
+		t.Errorf("w.scanned deveria estar vazio após RemoveDir, obteve %v", w.scanned)
+	}
+	if len(w.pending) != 0 {
+		t.Errorf("w.pending deveria estar vazio após RemoveDir, obteve %v", w.pending)
+	}
+	w.mu.Unlock()
+
+	// Arquivo criado DEPOIS da remoção não deve ser promovido: scan() não
+	// varre mais este diretório (fora de w.dirs) e ele não foi
+	// re-adicionado ao fsnotify.
+	b := filepath.Join(dir, "b.mkv")
+	writeFileSize(t, b, 2000)
+	w.scan()
+	time.Sleep(600 * time.Millisecond)
+	w.flushStable()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 1 {
+		t.Fatalf("arquivo criado após RemoveDir foi promovido indevidamente: %v", got)
+	}
+}
+
+// TestWatcherRemoveDirRefreshesSubdirs garante que RemoveDir refaz a
+// varredura no momento da remoção (não reusa um snapshot de AddDir): uma
+// subpasta criada DEPOIS do AddDir original (e descoberta pela varredura
+// periódica scan(), que chama w.fsw.Add em subpastas novas) também precisa
+// ser purgada de w.pending/w.scanned na remoção.
+func TestWatcherRemoveDirRefreshesSubdirs(t *testing.T) {
+	dir := t.TempDir()
+
+	var mu sync.Mutex
+	var got []string
+	w := newTestWatcher(t, dir, func(p string) {
+		mu.Lock()
+		got = append(got, p)
+		mu.Unlock()
+	})
+	if err := w.AddDir(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	// Subpasta criada DEPOIS do AddDir original — só entra em w.fsw via
+	// scan() (mesmo mecanismo usado por TestScanCoversNewSubdir).
+	sub := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(sub, "nested.mkv")
+	writeFileSize(t, nested, 1500)
+	w.scan() // registra "sub" no fsnotify e toca nested.mkv (pending)
+
+	w.mu.Lock()
+	_, pending := w.pending[nested]
+	w.mu.Unlock()
+	if !pending {
+		t.Fatalf("esperava %s em w.pending após scan()", nested)
+	}
+
+	if err := w.RemoveDir(dir); err != nil {
+		t.Fatalf("RemoveDir: %v", err)
+	}
+
+	w.mu.Lock()
+	_, stillPending := w.pending[nested]
+	w.mu.Unlock()
+	if stillPending {
+		t.Errorf("w.pending ainda contém %s (subpasta da varredura) após RemoveDir", nested)
+	}
+
+	// Deixa o arquivo estabilizar e confirma que nunca foi promovido.
+	time.Sleep(600 * time.Millisecond)
+	w.flushStable()
+	w.scan()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 0 {
+		t.Fatalf("nested.mkv não deveria ter sido promovido após RemoveDir: %v", got)
 	}
 }
