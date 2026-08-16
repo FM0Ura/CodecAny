@@ -1,6 +1,8 @@
 import { Route, Routes } from "react-router-dom";
 import { AppLayout } from "./components/AppLayout";
 import { Dashboard } from "./routes/Dashboard";
+import { Queue } from "./routes/Queue";
+import { Approval } from "./routes/Approval";
 import { Placeholder } from "./routes/Placeholder";
 import { DashboardSummaryProvider } from "./context/DashboardSummaryContext";
 
@@ -10,11 +12,8 @@ export default function App() {
       <Routes>
         <Route element={<AppLayout />}>
           <Route index element={<Dashboard />} />
-          <Route path="fila" element={<Placeholder screen="Fila" phase="Fase B" />} />
-          <Route
-            path="aprovacao"
-            element={<Placeholder screen="Aguardando Aprovação" phase="Fase B" />}
-          />
+          <Route path="fila" element={<Queue />} />
+          <Route path="aprovacao" element={<Approval />} />
           <Route
             path="diretorios"
             element={<Placeholder screen="Diretórios Monitorados" phase="Fase C" />}
