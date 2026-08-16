@@ -1,0 +1,193 @@
+/* ===================================================================
+   CodecAny — Signal Path design system
+   Tokens, @font-face, and minimal reset.
+   =================================================================== */
+
+@font-face {
+  font-family: "Fira Sans Compressed";
+  src: url("../assets/fonts/FiraSansCompressed-ExtraBold.woff2") format("woff2");
+  font-weight: 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Fira Sans Compressed";
+  src: url("../assets/fonts/FiraSansCompressed-SemiBold.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Fira Sans";
+  src: url("../assets/fonts/FiraSans-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Fira Sans";
+  src: url("../assets/fonts/FiraSans-Medium.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Fira Sans";
+  src: url("../assets/fonts/FiraSans-SemiBold.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Hack";
+  src: url("../assets/fonts/Hack-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Hack";
+  src: url("../assets/fonts/Hack-Bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  --ground: #0f0b17;
+  --surface: #17111f;
+  --surface-2: #201929;
+  --surface-3: #2a2136;
+  --border: #362a45;
+  --border-soft: #251c32;
+  --text: #eee8f7;
+  --text-muted: #a99cc4;
+  --text-faint: #6d6184;
+
+  --accent: #8c6ff2;
+  --accent-ink: #150a28;
+  --accent-dim: #4a3780;
+  --accent-fill: #271a44;
+
+  --signal: #3fd6e6;
+  --signal-dim: #1f5c66;
+  --signal-fill: #12303a;
+
+  --success: #5ad394;
+  --success-fill: #16302a;
+  --success-border: #2e5245;
+
+  --danger: #f16b63;
+  --danger-fill: #3a2027;
+  --danger-border: #5c3540;
+
+  --info: #8993d1;
+  --info-fill: #1e2138;
+  --info-border: #38406b;
+
+  --neutral: #8a7fa0;
+  --neutral-fill: #221c2e;
+  --neutral-border: #40374f;
+
+  --font-display: "Fira Sans Compressed", sans-serif;
+  --font-body: "Fira Sans", sans-serif;
+  --font-mono: "Hack", ui-monospace, monospace;
+
+  --radius: 4px;
+  --nav-width: 220px;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-weight: 400;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p,
+ul,
+ol,
+figure {
+  margin: 0;
+}
+
+ul,
+ol {
+  padding: 0;
+  list-style: none;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+  background: none;
+  border: none;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.numeric,
+.font-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.font-display {
+  font-family: var(--font-display);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

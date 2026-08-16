@@ -1,0 +1,108 @@
+.nav-rail {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: var(--nav-width);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-right: 1px solid var(--border-soft);
+  padding: 1.1rem 0.85rem;
+  gap: 1.6rem;
+  overflow-y: auto;
+}
+
+.nav-rail__brand {
+  display: flex;
+  align-items: center;
+  gap: 0.55em;
+  padding: 0 0.3rem;
+}
+
+.nav-rail__led {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 6px 1px var(--accent);
+  animation: nav-led-pulse 2.2s ease-in-out infinite;
+}
+
+@keyframes nav-led-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+.nav-rail__brand-name {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 15px;
+  letter-spacing: 0.12em;
+  color: var(--text);
+}
+
+.nav-rail__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.nav-rail__link {
+  display: flex;
+  align-items: center;
+  gap: 0.7em;
+  padding: 0.55rem 0.65rem;
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 12.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.nav-rail__link svg {
+  flex: none;
+}
+
+.nav-rail__link:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+.nav-rail__link.is-active {
+  color: var(--accent);
+  background: var(--accent-fill);
+}
+
+.nav-rail__label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-rail__badge {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 11px;
+  padding: 0.1em 0.5em;
+  border-radius: 999px;
+  background: var(--accent-dim);
+  color: var(--text);
+  min-width: 1.4em;
+  text-align: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nav-rail__led {
+    animation: none;
+  }
+}

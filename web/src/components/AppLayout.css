@@ -1,0 +1,11 @@
+.app-layout__main {
+  margin-left: var(--nav-width);
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-layout__content {
+  flex: 1;
+  padding: 1.5rem;
+}

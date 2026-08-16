@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -106,6 +107,30 @@ func (e *Engine) hwSemaphore(vendor string) chan struct{} {
 		return nil
 	}
 	return e.hwSemaphores[strings.ToLower(vendor)]
+}
+
+// HWAccelStatus descreve a utilização atual do semáforo de um vendor de
+// hwaccel (ver hwSemaphores) — usado pelo dashboard do painel de controle
+// para mostrar quantos slots de cada vendor estão ocupados.
+type HWAccelStatus struct {
+	Vendor string `json:"vendor"`
+	Limit  int    `json:"limit"`
+	InUse  int    `json:"in_use"`
+}
+
+// HWAccelStatus retorna a utilização de cada vendor de hwaccel com limite
+// configurado em global.hwaccel_limits (vendors sem limite não têm semáforo
+// e portanto não aparecem aqui — ver NewEngine/hwSemaphore). Limit é a
+// capacidade do canal-semáforo (cap(ch)) e InUse é quantos slots estão
+// ocupados agora (len(ch)). Ordenado por Vendor para saída determinística
+// (testes e UI).
+func (e *Engine) HWAccelStatus() []HWAccelStatus {
+	out := make([]HWAccelStatus, 0, len(e.hwSemaphores))
+	for vendor, ch := range e.hwSemaphores {
+		out = append(out, HWAccelStatus{Vendor: vendor, Limit: cap(ch), InUse: len(ch)})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Vendor < out[j].Vendor })
+	return out
 }
 
 // Events returns o canal de eventos nativos (RF06, RI02).
@@ -380,6 +405,13 @@ loop:
 	if !keep {
 		// rollback
 		cl.Abort()
+		// Persiste as métricas ANTES de UpdateStatus, mesmo padrão dos ramos
+		// AWAITING_APPROVAL/COMPLETED abaixo: sem isso, todo job ROLLED_BACK
+		// ficava com original_size/converted_size/saved_bytes zerados no
+		// banco (só a cópia em memória job.SizeMetrics, usada no evento/
+		// webhook, era atualizada) — bug encontrado ao desenhar a coluna
+		// Original/Convertido do painel de controle (item 14).
+		e.store.UpdateMetrics(job.ID, m)
 		fin := time.Now()
 		e.store.UpdateStatus(job.ID, StatusRolledBack, nil, &fin, "")
 		job.Status = StatusRolledBack
@@ -628,6 +660,19 @@ func (e *Engine) GetTotalSavings() (SizeMetrics, error) {
 		return SizeMetrics{}, fmt.Errorf("store não inicializado")
 	}
 	return e.store.GetTotalSavings()
+}
+
+// CountJobsByStatus expõe Store.CountByStatus ao chamador do Engine
+// (dashboard do painel de controle) — mesmo padrão de wrapper fino de
+// ListJobs/GetTotalSavings.
+func (e *Engine) CountJobsByStatus() (map[JobStatus]int, error) {
+	return e.store.CountByStatus()
+}
+
+// GetJob busca um Job pelo ID. Wrapper trivial de Store.FindByID — preserva
+// a convenção de retornar (nil, nil) quando o job não existe (não é erro).
+func (e *Engine) GetJob(id string) (*Job, error) {
+	return e.store.FindByID(id)
 }
 
 // Shutdown encerra o watcher e o store. Antes disso, aguarda (com timeout

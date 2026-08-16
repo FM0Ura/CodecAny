@@ -72,6 +72,31 @@ O binário é estático e não exige dependências de runtime além dos binário
 | `-file` | — | arquivo específico a processar uma vez e sair (repetível; substitui o modo watch) |
 | `-json` | `false` | log estruturado em JSON |
 
+## Painel de controle (opcional)
+
+Além do binário CLI, há um servidor web opcional (`cmd/server`) que expõe um painel de controle (dashboard, fila, aprovação, regras etc. — ver [`docs/propostas_painel_controle.md`](docs/propostas_painel_controle.md)). Consome o mesmo `pkg/core` que o `cmd/cli`, sem nenhuma mudança na filosofia "binário estático, sem servidor pesado": o painel é só mais um cliente das interfaces já existentes.
+
+```bash
+# build do frontend (gera cmd/server/webdist, embutido no binário via go:embed)
+cd web && pnpm install && pnpm build && cd ..
+
+# build + execução do servidor (mesmas flags do cmd/cli, mais -addr)
+go build -o codecany-server ./cmd/server
+./codecany-server -db codecany.db -rules rules.yaml -addr 127.0.0.1:8383 -dir /mnt/media
+```
+
+Acesse `http://127.0.0.1:8383`. Sem autenticação — assume rede confiável (bind padrão em `127.0.0.1`). Requer **pnpm** (não npm/yarn) só em tempo de build do frontend; o binário final não depende de Node em produção.
+
+### Acesso remoto via Tailscale
+
+O servidor continua bindado só em `127.0.0.1` (nunca exposto por engano em nenhuma interface de rede) — quem expõe pra sua tailnet é o próprio Tailscale, via `tailscale serve`:
+
+```bash
+tailscale serve --bg --https 8443 http://127.0.0.1:8383
+```
+
+Fica acessível em `https://<nome-da-máquina>.<sua-tailnet>.ts.net:8443`, com HTTPS automático, a partir de qualquer dispositivo autorizado na tailnet — sem precisar mudar o `-addr` do `codecany-server` nem abrir porta nenhuma. Para desligar: `tailscale serve --https 8443 off`.
+
 ## Regras (`rules.yaml`)
 
 Veja o exemplo completo em [`examples/rules.yaml`](examples/rules.yaml). Resumo:
@@ -89,7 +114,8 @@ Veja o exemplo completo em [`examples/rules.yaml`](examples/rules.yaml). Resumo:
 /pkg/core              → orquestrador, watcher com debounce, fila SQLite (WAL), regras, integridade, cleanup
 /pkg/adapters/ffmpeg   → driver padrão (ffprobe + ffmpeg)
 /cmd/cli               → wrapper de linha de comando
-/cmd/server            → (futuro) wrapper HTTP/WebSocket/SSE
+/cmd/server            → servidor HTTP do painel de controle (REST + SSE), serve o SPA de /web embutido via go:embed
+/web                   → frontend do painel (React + TypeScript + Vite, gerenciado só com pnpm)
 ```
 
 O core se comunica somente através das interfaces puras `MediaProber` e `TranscoderEngine`, permitindo drivers alternativos sem alterações no orquestrador.

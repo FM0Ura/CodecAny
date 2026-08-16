@@ -1,0 +1,81 @@
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45em;
+  padding: 0.28em 0.7em;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.chip::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  min-width: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.chip--queued {
+  color: var(--info);
+  background: var(--info-fill);
+  border-color: var(--info-border);
+}
+
+.chip--progress {
+  color: var(--accent);
+  background: var(--accent-fill);
+  border-color: var(--accent-dim);
+}
+
+.chip--progress::before {
+  animation: chip-pulse 1.4s ease-in-out infinite;
+}
+
+.chip--awaiting {
+  color: var(--info);
+  background: transparent;
+  border-color: var(--info-border);
+  border-style: dashed;
+}
+
+.chip--completed {
+  color: var(--success);
+  background: var(--success-fill);
+  border-color: var(--success-border);
+}
+
+.chip--failed {
+  color: var(--danger);
+  background: var(--danger-fill);
+  border-color: var(--danger-border);
+}
+
+.chip--reverted {
+  color: var(--neutral);
+  background: transparent;
+  border-color: var(--neutral-border);
+}
+
+@keyframes chip-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chip--progress::before {
+    animation: none;
+  }
+}

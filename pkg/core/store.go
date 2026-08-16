@@ -173,6 +173,29 @@ func (s *Store) GetTotalSavings() (SizeMetrics, error) {
 	return m, nil
 }
 
+// CountByStatus agrega quantos Jobs existem em cada status (GROUP BY status,
+// usa idx_jobs_status já existente) — mais eficiente que ListJobs/scanJob
+// para o dashboard, que só precisa dos totais e não das colunas inteiras de
+// cada Job. Só retorna status com pelo menos 1 job; o chamador decide o
+// default (0) para status ausentes do mapa.
+func (s *Store) CountByStatus() (map[JobStatus]int, error) {
+	rows, err := s.db.Query(`SELECT status, COUNT(*) FROM jobs GROUP BY status`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	counts := make(map[JobStatus]int)
+	for rows.Next() {
+		var status JobStatus
+		var n int
+		if err := rows.Scan(&status, &n); err != nil {
+			return nil, err
+		}
+		counts[status] = n
+	}
+	return counts, rows.Err()
+}
+
 // maxClaimRetries limita as tentativas de NextPendingJob ao perder a corrida
 // de reivindicação para outro worker (ver comentário em NextPendingJob).
 // Um valor alto o bastante para nunca ser atingido em uso normal (mesmo com

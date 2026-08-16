@@ -288,6 +288,61 @@ func TestListJobsFiltersByStatusAndSince(t *testing.T) {
 	}
 }
 
+// TestStoreCountByStatus confirma que CountByStatus agrega corretamente por
+// status (GROUP BY status) e que status sem nenhum job não aparecem no mapa
+// retornado (o chamador decide o default para esses casos).
+func TestStoreCountByStatus(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	// Sem nenhum job, o mapa deve vir vazio.
+	counts, err := store.CountByStatus()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(counts) != 0 {
+		t.Errorf("esperava mapa vazio sem jobs, obteve %+v", counts)
+	}
+
+	now := time.Now()
+	jobs := []*Job{
+		{ID: "q1", Path: "q1.mkv", Status: StatusQueued, Driver: "ffmpeg", CreatedAt: now},
+		{ID: "q2", Path: "q2.mkv", Status: StatusQueued, Driver: "ffmpeg", CreatedAt: now},
+		{ID: "c1", Path: "c1.mkv", Status: StatusCompleted, Driver: "ffmpeg", CreatedAt: now},
+		{ID: "f1", Path: "f1.mkv", Status: StatusFailed, Driver: "ffmpeg", CreatedAt: now},
+	}
+	for _, j := range jobs {
+		if err := store.CreateJob(j); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	counts, err = store.CountByStatus()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[JobStatus]int{
+		StatusQueued:    2,
+		StatusCompleted: 1,
+		StatusFailed:    1,
+	}
+	if len(counts) != len(want) {
+		t.Fatalf("esperava %d status distintos, obteve %d: %+v", len(want), len(counts), counts)
+	}
+	for status, n := range want {
+		if counts[status] != n {
+			t.Errorf("status %v: esperava %d, obteve %d (mapa completo: %+v)", status, n, counts[status], counts)
+		}
+	}
+	if _, ok := counts[StatusRolledBack]; ok {
+		t.Errorf("não esperava entrada para status sem jobs (ROLLED_BACK): %+v", counts)
+	}
+}
+
 // TestNextPendingJobConcurrentClaimsAreExclusive é o teste de regressão da
 // race pré-existente em NextPendingJob: antes da reivindicação atômica
 // (SELECT + UPDATE condicional "WHERE status=QUEUED"), dois workers

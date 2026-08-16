@@ -1,0 +1,110 @@
+.meter {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35em;
+}
+
+.meter__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75em;
+}
+
+.meter__label {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+}
+
+.meter__value {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--signal);
+  font-size: 13px;
+}
+
+.meter__track {
+  position: relative;
+  height: 10px;
+  border-radius: 3px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  overflow: hidden;
+}
+
+.meter__fill {
+  height: 100%;
+  background: var(--signal);
+  border-radius: 2px 0 0 2px;
+  transition: width 0.3s ease;
+}
+
+/* Textura de "corte" segmentado, sobreposta ao preenchimento contínuo — dá
+   a leitura de um VU meter em vez de uma barra de progresso lisa. */
+.meter__track::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    to right,
+    var(--ground) 0 2px,
+    transparent 2px 6px
+  );
+  pointer-events: none;
+}
+
+/* --- Variante de blocos discretos (utilização de hwaccel: limit/in_use) --- */
+
+.block-meter {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35em;
+}
+
+.block-meter__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75em;
+}
+
+.block-meter__label {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+.block-meter__value {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--signal);
+  font-size: 13px;
+}
+
+.block-meter__blocks {
+  display: flex;
+  gap: 3px;
+}
+
+.block-meter__block {
+  height: 12px;
+  flex: 1;
+  min-width: 6px;
+  border-radius: 2px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+}
+
+.block-meter__block--filled {
+  background: var(--signal);
+  border-color: var(--signal-dim);
+}

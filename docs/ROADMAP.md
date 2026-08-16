@@ -116,14 +116,11 @@ Todos os testes encontram-se passando com sucesso, garantindo estabilidade no de
 Com a fundação estável e testada da **Versão 1**, os próximos passos estão direcionados à expansão de conectividade e otimizações avançadas:
 
 ### 🚀 Marcos Planejados:
-1. **Headless Web Server (`cmd/server`)**:
-   - Criação de um executável adicional com servidor REST API embarcado.
-   - Exposição do progresso dos trabalhadores via WebSockets ou Server-Sent Events (SSE).
-   - Endpoints para gerenciar a fila do banco de dados remotamente.
+1. **Painel de Controle Web (`cmd/server` + `/web`)** — ver [`docs/propostas_painel_controle.md`](propostas_painel_controle.md) e [`docs/design_painel_controle.md`](design_painel_controle.md) para o plano e a identidade visual ("Signal Path") completos:
+   - ✅ **Fase A concluída**: `cmd/server` (servidor REST + SSE embarcado, `net/http` puro, sem router externo) servindo o SPA de `/web` (React + TypeScript + Vite, gerenciado só com pnpm) via `go:embed`. Endpoints somente-leitura (`/api/status`, `/api/dashboard/summary`, `/api/jobs`, `/api/events` via SSE) e Dashboard funcional (contadores por status, economia acumulada, utilização de hwaccel, progresso ao vivo).
+   - ⏭️ Fases seguintes (staging/aprovação, diretórios monitorados, builder de regras, health check, histórico) descritas no plano acima.
 2. **Otimizações Automáticas de Hardware (GPU Transcoding)**:
    - Detecção automatizada de aceleração no host (Nvidia NVENC, Intel QuickSync, Apple VideoToolbox).
    - Inserção de presets específicos nos adapters para transcodificação acelerada por hardware de altíssima performance.
 3. **Notificações Integradas (Notifiers)**:
    - Suporte a triggers de Webhooks ao concluir jobs com sucesso ou falha (integração com Discord, Slack, Telegram).
-4. **Dashboard SPA Front-end**:
-   - Interface web leve para visualização em tempo real de estatísticas de compressão acumulada e controle de fila de jobs.

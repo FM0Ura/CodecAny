@@ -850,3 +850,140 @@ func TestEngineUpdatesPathOnContainerChange(t *testing.T) {
 		t.Errorf("não esperava registro remanescente sob o caminho antigo: %+v", stale)
 	}
 }
+
+// TestEngineHWAccelStatus prova que HWAccelStatus reflete corretamente
+// Limit (capacidade do semáforo) e InUse (slots ocupados) enquanto um job
+// está em voo, usando o mesmo controllableTranscoder/release de
+// TestEngineHWAccelLimitBlocksConcurrentTranscodes para segurar o transcode
+// em andamento até o teste confirmar o estado esperado.
+func TestEngineHWAccelStatus(t *testing.T) {
+	eng, ct, jobA, jobB := setupHWAccelEngine(t, "version: 1\nglobal:\n  default_driver: mock\n  staging_dir: __STAGE__\n  space_saving:\n    min_saving_pct: 15\n  hwaccel_limits:\n    mock: 2\n  defaults:\n    video: { codec: hevc }\n    auto_approve: true\nrules:\n  - name: r\n    convert:\n      video: { codec: hevc, hwaccel: mock }\n")
+	_ = jobB
+
+	// Antes de qualquer job rodar, o vendor "mock" aparece com o limite
+	// configurado e nenhum slot em uso.
+	status := eng.HWAccelStatus()
+	if len(status) != 1 {
+		t.Fatalf("esperava 1 vendor na lista, obteve %d: %+v", len(status), status)
+	}
+	if status[0].Vendor != "mock" || status[0].Limit != 2 || status[0].InUse != 0 {
+		t.Errorf("status inicial inesperado: %+v", status[0])
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	doneA := make(chan struct{})
+	go func() { defer close(doneA); eng.runJob(ctx, jobA) }()
+
+	select {
+	case <-ct.startedNotify:
+	case <-time.After(2 * time.Second):
+		t.Fatal("job A não chamou Transcode dentro do tempo limite")
+	}
+
+	// Com o job A em voo, InUse deve refletir 1 slot ocupado do limite de 2.
+	status = eng.HWAccelStatus()
+	if len(status) != 1 {
+		t.Fatalf("esperava 1 vendor na lista, obteve %d: %+v", len(status), status)
+	}
+	if status[0].Vendor != "mock" || status[0].Limit != 2 || status[0].InUse != 1 {
+		t.Errorf("status com job em voo inesperado: %+v", status[0])
+	}
+
+	select {
+	case ct.release <- struct{}{}:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout ao liberar o job A")
+	}
+	<-doneA
+
+	// Job liberado: o slot volta a ficar livre.
+	status = eng.HWAccelStatus()
+	if status[0].InUse != 0 {
+		t.Errorf("esperava InUse=0 após o job liberar o slot, obteve %+v", status[0])
+	}
+}
+
+// TestEngineHWAccelStatusEmptyWithoutLimits confirma que vendors sem limite
+// configurado em global.hwaccel_limits não aparecem na lista.
+func TestEngineHWAccelStatusEmptyWithoutLimits(t *testing.T) {
+	eng, _, _, _ := setupHWAccelEngine(t, "version: 1\nglobal:\n  default_driver: mock\n  staging_dir: __STAGE__\n  space_saving:\n    min_saving_pct: 15\n  defaults:\n    video: { codec: hevc }\n    auto_approve: true\nrules:\n  - name: r\n    convert:\n      video: { codec: hevc }\n")
+	if status := eng.HWAccelStatus(); len(status) != 0 {
+		t.Errorf("esperava lista vazia sem hwaccel_limits configurado, obteve %+v", status)
+	}
+}
+
+// TestEngineGetJob cobre o wrapper trivial de Store.FindByID: job existente
+// retorna o job certo, inexistente retorna (nil, nil) sem erro.
+func TestEngineGetJob(t *testing.T) {
+	eng, _, mediaPath, _ := setupEngine(t, 1000, 500)
+	eng.HandleDiscovered(mediaPath)
+
+	want, err := eng.store.FindByPath(mediaPath)
+	if err != nil || want == nil {
+		t.Fatalf("esperava job persistido: %v", err)
+	}
+
+	got, err := eng.GetJob(want.ID)
+	if err != nil {
+		t.Fatalf("GetJob falhou: %v", err)
+	}
+	if got == nil || got.ID != want.ID {
+		t.Fatalf("GetJob(%s) = %+v, esperado job %+v", want.ID, got, want)
+	}
+
+	missing, err := eng.GetJob("não-existe")
+	if err != nil {
+		t.Fatalf("GetJob de id inexistente não deveria retornar erro: %v", err)
+	}
+	if missing != nil {
+		t.Errorf("esperava nil para id inexistente, obteve %+v", missing)
+	}
+}
+
+// TestEngineCountJobsByStatus confirma que o wrapper do Engine delega
+// corretamente para Store.CountByStatus.
+func TestEngineCountJobsByStatus(t *testing.T) {
+	eng, events, mediaPath, _ := setupEngine(t, 1000, 500) // 50% economia -> COMPLETED
+	runToCompletion(t, eng, events, mediaPath)
+
+	counts, err := eng.CountJobsByStatus()
+	if err != nil {
+		t.Fatalf("CountJobsByStatus falhou: %v", err)
+	}
+	if counts[StatusCompleted] != 1 {
+		t.Errorf("esperava 1 job COMPLETED, obteve %+v", counts)
+	}
+	if counts[StatusQueued] != 0 {
+		t.Errorf("não esperava jobs QUEUED, obteve %+v", counts)
+	}
+}
+
+// TestEngineRollbackPersistsMetrics é o teste de regressão do item 14: força
+// um cenário de economia insuficiente (mesmo setup de
+// TestEngineRollsBackInsufficientGain) e confirma que, após runJob, o Job
+// RECARREGADO DO STORE (não a cópia em memória) tem SizeMetrics não-zerado —
+// antes do fix, só job.SizeMetrics (em memória) era atualizado no ramo de
+// rollback; e.store.UpdateMetrics nunca era chamado, então
+// original_size/converted_size/saved_bytes ficavam zerados no banco.
+func TestEngineRollbackPersistsMetrics(t *testing.T) {
+	eng, events, mediaPath, _ := setupEngine(t, 1000, 950) // 5% < 15% (min_saving_pct)
+	runToCompletion(t, eng, events, mediaPath)
+
+	job, err := eng.store.FindByPath(mediaPath)
+	if err != nil || job == nil {
+		t.Fatalf("esperava job persistido: %v", err)
+	}
+	if job.Status != StatusRolledBack {
+		t.Fatalf("esperava status ROLLED_BACK, obteve %v", job.Status)
+	}
+	if job.SizeMetrics.OriginalSizeBytes != 1000 {
+		t.Errorf("SizeMetrics.OriginalSizeBytes esperado 1000, obteve %d (métricas não persistidas no rollback)", job.SizeMetrics.OriginalSizeBytes)
+	}
+	if job.SizeMetrics.ConvertedSizeBytes != 950 {
+		t.Errorf("SizeMetrics.ConvertedSizeBytes esperado 950, obteve %d (métricas não persistidas no rollback)", job.SizeMetrics.ConvertedSizeBytes)
+	}
+	if job.SizeMetrics.SavedBytes != 50 {
+		t.Errorf("SizeMetrics.SavedBytes esperado 50, obteve %d (métricas não persistidas no rollback)", job.SizeMetrics.SavedBytes)
+	}
+}
