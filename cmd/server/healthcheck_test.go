@@ -108,11 +108,52 @@ func TestHandleHealthCheckWithRequestDirsAndFiles(t *testing.T) {
 	}
 }
 
-// TestHandleHealthCheckFallsBackToConfiguredDirs confirma que um corpo
-// vazio (ou dirs/files ausentes) cai para a.Dirs — os diretórios monitorados
-// configurados no boot do servidor (fallback documentado no relatório da
-// Fase E, já que a persistência de diretórios da Fase C não existe neste
-// branch).
+// TestHandleHealthCheckFallsBackToWatchedDirs confirma que um corpo vazio
+// (ou dirs/files ausentes) cai para Engine.ListWatchedDirs() — os
+// diretórios monitorados persistidos pela tela de Diretórios (Fase C) — em
+// vez de exigir que tenham sido passados via -dir no boot. Bug de
+// integração: antes desta correção, o fallback só olhava a.Dirs (snapshot
+// de -dir), então diretórios adicionados só pelo painel nunca eram
+// verificados por um health-check de corpo vazio.
+func TestHandleHealthCheckFallsBackToWatchedDirs(t *testing.T) {
+	ts := newTestServer(t)
+	ts.app.Verifier = markerVerifier{corruptMarker: []byte("CORRUPT")}
+
+	dir := t.TempDir()
+	okPath := filepath.Join(dir, "a.mkv")
+	if err := os.WriteFile(okPath, []byte("dados-validos"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Diretório adicionado só via Engine.AddWatchedDir (o mesmo caminho usado
+	// por POST /api/dirs), NÃO via a.Dirs/-dir — é exatamente o caso que
+	// estava quebrado.
+	if err := ts.app.Engine.AddWatchedDir(dir); err != nil {
+		t.Fatalf("AddWatchedDir: %v", err)
+	}
+
+	srv := httptest.NewServer(ts.app.Handler())
+	defer srv.Close()
+
+	// Corpo completamente vazio.
+	resp := postHealthCheck(t, srv, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var got []core.HealthCheckResult
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != 1 || got[0].Path != okPath || got[0].Status != core.HealthStatusOK {
+		t.Fatalf("esperava 1 resultado ok para %s (fallback watched_dirs); obteve %+v", okPath, got)
+	}
+}
+
+// TestHandleHealthCheckFallsBackToConfiguredDirs confirma que, quando não há
+// nenhum diretório monitorado persistido (Fase C), o handler ainda cai para
+// a.Dirs — o snapshot efêmero de -dir capturado no boot do servidor —
+// preservando compatibilidade com quem roda o servidor sem nunca configurar
+// diretórios pelo painel.
 func TestHandleHealthCheckFallsBackToConfiguredDirs(t *testing.T) {
 	ts := newTestServer(t)
 	ts.app.Verifier = markerVerifier{corruptMarker: []byte("CORRUPT")}

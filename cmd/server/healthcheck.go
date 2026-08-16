@@ -9,7 +9,7 @@ import (
 
 // healthCheckRequest é o corpo (opcional) de POST /api/health-check. Quando
 // ambos os campos vêm vazios/ausentes, o handler cai no fallback de
-// a.Dirs — ver handleHealthCheck.
+// Engine.ListWatchedDirs()/a.Dirs — ver handleHealthCheck.
 type healthCheckRequest struct {
 	Dirs  []string `json:"dirs,omitempty"`
 	Files []string `json:"files,omitempty"`
@@ -22,11 +22,18 @@ type healthCheckRequest struct {
 // para bibliotecas grandes isso pode levar bastante tempo; uma fase futura
 // pode mover para um job assíncrono reportado via SSE.
 //
-// Corpo vazio ou com dirs/files ausentes usa a.Dirs (diretórios monitorados
-// configurados no boot deste processo via -dir) como fallback. A Fase C
-// (persistência de diretórios monitorados) ainda não está disponível neste
-// branch — se a.Dirs também estiver vazio E o request não informar
-// dirs/files, o handler responde 400: não há diretório algum para variar.
+// Corpo vazio ou com dirs/files ausentes usa, nesta ordem: (1)
+// Engine.ListWatchedDirs() — os diretórios monitorados persistidos da Fase C
+// (tabela watched_dirs), consultados a cada request (não um snapshot de
+// boot) para refletir alterações feitas pela tela de Diretórios sem precisar
+// reiniciar o servidor; (2) a.Dirs — snapshot efêmero de -dir capturado no
+// boot deste processo, só para compatibilidade com quem roda o servidor sem
+// nunca configurar diretórios pelo painel. Bug corrigido aqui: antes da
+// integração da Fase C neste branch, só (2) existia — health-check com corpo
+// vazio nunca enxergava diretórios adicionados via painel (só via -dir), o
+// que o tornava inútil pro fluxo normal de uso pelo painel. Se nenhuma das
+// duas fontes tiver diretórios E o request não informar dirs/files, o
+// handler responde 400: não há diretório algum para varrer.
 func (a *App) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
 	var req healthCheckRequest
 	if r.Body != nil {
@@ -39,6 +46,14 @@ func (a *App) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
 
 	dirs := req.Dirs
 	files := req.Files
+	if len(dirs) == 0 && len(files) == 0 {
+		watched, err := a.Engine.ListWatchedDirs()
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		dirs = watched
+	}
 	if len(dirs) == 0 && len(files) == 0 {
 		dirs = a.Dirs
 	}

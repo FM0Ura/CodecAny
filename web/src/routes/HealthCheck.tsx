@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { ApiError, runHealthCheck } from "../api/client";
+import { useEffect, useState } from "react";
+import { ApiError, getDirs, runHealthCheck } from "../api/client";
 import type { HealthCheckResult } from "../api/types";
 import { Panel } from "../components/Panel";
 import { StatTile } from "../components/StatTile";
@@ -8,24 +8,45 @@ import "./HealthCheck.css";
 
 type ScanState = "idle" | "running" | "done" | "error";
 
+/** Sentinela do <select> de escopo — "todos os diretórios monitorados". */
+const SCOPE_ALL = "__all__";
+
 /**
  * Tela de Health Check (Fase E, item 11 da proposta). POST /api/health-check
  * é síncrono no v1 — sem streaming/SSE — então a UI só tem três estados:
- * idle (botão + campo opcional de dirs/files), running (indicador de
- * carregamento, sem barra de progresso real já que o servidor não reporta
- * progresso parcial) e done/error (lista de resultados ou mensagem de erro).
+ * idle (botão + campos opcionais de escopo/dirs/files), running (indicador
+ * de carregamento, sem barra de progresso real já que o servidor não
+ * reporta progresso parcial) e done/error (lista de resultados ou mensagem
+ * de erro).
  *
- * Campo de dirs/files: um textarea de texto livre (um caminho por linha) —
- * decisão de produto deste v1 para não depender da Fase C (navegador de
- * diretórios via GET /api/fs/browse, ainda não implementada neste branch).
- * Deixar vazio usa o fallback do servidor (diretórios monitorados
- * configurados no boot, ver cmd/server/healthcheck.go).
+ * Escopo: dropdown alimentado por GET /api/dirs (diretórios monitorados
+ * persistidos, Fase C) — "Todos" ou um diretório específico, útil em
+ * bibliotecas grandes com várias pastas monitoradas onde rodar tudo de uma
+ * vez é caro. O escopo escolhido é sempre resolvido para uma lista explícita
+ * de dirs enviada no request (não depende do fallback do servidor quando
+ * há diretórios monitorados) — assim o que aparece selecionado na tela é
+ * exatamente o que é varrido. O textarea abaixo continua disponível para
+ * caminhos avulsos fora dos diretórios monitorados (ex.: um arquivo solto).
+ * Corpo totalmente vazio (nenhum diretório monitorado E nada no textarea)
+ * cai no fallback do servidor (ver cmd/server/healthcheck.go).
  */
 export function HealthCheck() {
+  const [watchedDirs, setWatchedDirs] = useState<string[]>([]);
+  const [scope, setScope] = useState<string>(SCOPE_ALL);
   const [pathsInput, setPathsInput] = useState("");
   const [state, setState] = useState<ScanState>("idle");
   const [results, setResults] = useState<HealthCheckResult[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    getDirs()
+      .then(setWatchedDirs)
+      .catch(() => {
+        // Falha ao listar diretórios monitorados não impede o uso da tela —
+        // só o dropdown de escopo fica limitado a "Todos" (vazio) e o
+        // textarea manual continua funcionando normalmente.
+      });
+  }, []);
 
   const runScan = async () => {
     setState("running");
@@ -35,8 +56,11 @@ export function HealthCheck() {
       .split("\n")
       .map((l) => l.trim())
       .filter(Boolean);
-    const dirs = lines.filter((l) => l.endsWith("/"));
+    const manualDirs = lines.filter((l) => l.endsWith("/"));
     const files = lines.filter((l) => !l.endsWith("/"));
+
+    const scopeDirs = scope === SCOPE_ALL ? watchedDirs : [scope];
+    const dirs = Array.from(new Set([...scopeDirs, ...manualDirs]));
 
     try {
       const res = await runHealthCheck(
@@ -64,14 +88,41 @@ export function HealthCheck() {
           de forma síncrona no servidor.
         </p>
 
+        <label className="health-check__label" htmlFor="hc-scope">
+          Escopo
+        </label>
+        <select
+          id="hc-scope"
+          className="health-check__select"
+          value={scope}
+          onChange={(e) => setScope(e.target.value)}
+          disabled={state === "running"}
+        >
+          <option value={SCOPE_ALL}>
+            Todos os diretórios monitorados
+            {watchedDirs.length > 0 ? ` (${watchedDirs.length})` : ""}
+          </option>
+          {watchedDirs.map((d) => (
+            <option key={d} value={d}>
+              {d}
+            </option>
+          ))}
+        </select>
+        {watchedDirs.length === 0 ? (
+          <span className="health-check__empty-note">
+            Nenhum diretório monitorado configurado (tela Diretórios) — use o campo abaixo para
+            informar caminhos manualmente.
+          </span>
+        ) : null}
+
         <label className="health-check__label" htmlFor="hc-paths">
-          Diretórios/arquivos específicos (opcional — um por linha; diretórios terminam em
-          &ldquo;/&rdquo;). Deixe em branco para usar os diretórios monitorados do servidor.
+          Diretórios/arquivos adicionais (opcional — um por linha; diretórios terminam em
+          &ldquo;/&rdquo;). Somados ao escopo selecionado acima.
         </label>
         <textarea
           id="hc-paths"
           className="health-check__textarea"
-          placeholder={"/media/filmes/\n/media/series/\n/media/extra/arquivo-solto.mkv"}
+          placeholder={"/media/extra/\n/media/extra/arquivo-solto.mkv"}
           value={pathsInput}
           onChange={(e) => setPathsInput(e.target.value)}
           disabled={state === "running"}

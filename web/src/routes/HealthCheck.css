@@ -22,6 +22,27 @@
   margin-bottom: 0.5rem;
 }
 
+.health-check__select {
+  width: 100%;
+  max-width: 32rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 13px;
+  padding: 0.55rem 0.7rem;
+  margin-bottom: 0.4rem;
+}
+
+.health-check__select:focus {
+  outline: none;
+  border-color: var(--accent-dim);
+}
+
+.health-check__select:disabled {
+  opacity: 0.6;
+}
+
 .health-check__textarea {
   width: 100%;
   resize: vertical;
@@ -33,6 +54,7 @@
   font-size: 12.5px;
   padding: 0.7rem 0.8rem;
   line-height: 1.5;
+  margin-top: 0.5rem;
 }
 
 .health-check__textarea:focus {
