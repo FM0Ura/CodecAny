@@ -414,3 +414,84 @@ func TestEstimateDurationFromSizeBitrate(t *testing.T) {
 		}
 	}
 }
+
+func TestParseFrameRate(t *testing.T) {
+	cases := []struct {
+		in   string
+		want float64
+	}{
+		{"", 0},
+		{"N/A", 0},
+		{"0/0", 0},
+		{"24000/1001", 23.976023976023978},
+		{"25/1", 25},
+		{"30", 30},
+	}
+	for _, c := range cases {
+		if got := parseFrameRate(c.in); got != c.want {
+			t.Errorf("parseFrameRate(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
+// TestProbe_FrameRatePrefersRFrameRate cobre o caminho feliz: mi.FrameRate é
+// preenchido a partir de r_frame_rate do stream de vídeo real, usado como
+// reserva do cálculo de progresso do transcode (ver
+// transcode.go/readProgress) quando o ffmpeg reporta out_time="N/A" —
+// bug real observado em arquivos com múltiplos streams de saída (vídeo +
+// capa + várias faixas de áudio + legendas).
+func TestProbe_FrameRatePrefersRFrameRate(t *testing.T) {
+	fakeJSON := `{
+		"format": {"format_name": "matroska,webm", "duration": "1576.575"},
+		"streams": [
+			{
+				"codec_type": "video",
+				"codec_name": "h264",
+				"width": 1920,
+				"height": 1080,
+				"r_frame_rate": "24000/1001",
+				"avg_frame_rate": "23979/1000",
+				"disposition": {"attached_pic": 0}
+			}
+		]
+	}`
+	bin := writeFakeFFprobe(t, fakeJSON)
+
+	mi, err := NewProber().WithBin(bin).Probe(filepath.Join(t.TempDir(), "movie.mkv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = 24000.0 / 1001.0
+	if diff := mi.FrameRate - want; diff > 0.0001 || diff < -0.0001 {
+		t.Errorf("esperava FrameRate≈%v (r_frame_rate), obteve %v", want, mi.FrameRate)
+	}
+}
+
+// TestProbe_FrameRateFallsBackToAvgFrameRate cobre o caso de r_frame_rate
+// ausente/"0/0" (comum em fontes de frame rate variável): mi.FrameRate deve
+// cair para avg_frame_rate em vez de ficar zerado.
+func TestProbe_FrameRateFallsBackToAvgFrameRate(t *testing.T) {
+	fakeJSON := `{
+		"format": {"format_name": "matroska,webm", "duration": "100"},
+		"streams": [
+			{
+				"codec_type": "video",
+				"codec_name": "h264",
+				"width": 1920,
+				"height": 1080,
+				"r_frame_rate": "0/0",
+				"avg_frame_rate": "25/1",
+				"disposition": {"attached_pic": 0}
+			}
+		]
+	}`
+	bin := writeFakeFFprobe(t, fakeJSON)
+
+	mi, err := NewProber().WithBin(bin).Probe(filepath.Join(t.TempDir(), "movie.mkv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mi.FrameRate != 25.0 {
+		t.Errorf("esperava FrameRate=25 (fallback avg_frame_rate), obteve %v", mi.FrameRate)
+	}
+}

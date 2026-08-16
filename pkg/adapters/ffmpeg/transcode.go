@@ -385,7 +385,7 @@ func (t *Transcode) Transcode(input, output string, media core.MediaInfo, target
 	prog := make(chan float64, 128)
 	go func() {
 		defer close(prog)
-		readProgress(stdout, media.DurationSec, prog)
+		readProgress(stdout, media.DurationSec, media.FrameRate, prog)
 		cmd.Wait()
 	}()
 
@@ -393,25 +393,46 @@ func (t *Transcode) Transcode(input, output string, media core.MediaInfo, target
 }
 
 // readProgress lê as linhas de "-progress pipe:1" de r e emite frações de
-// progresso (0..1) em out, usando durationSec como referência. Extraída de
-// Transcode() como função pura (recebe um io.Reader genérico em vez de
-// depender de cmd.StdoutPipe()) para ser testável sem precisar de um
+// progresso (0..1) em out, usando durationSec como referência primária.
+// Extraída de Transcode() como função pura (recebe um io.Reader genérico em
+// vez de depender de cmd.StdoutPipe()) para ser testável sem precisar de um
 // processo ffmpeg real.
-func readProgress(r io.Reader, durationSec float64, out chan<- float64) {
+//
+// frameRate (quadros/segundo, ver core.MediaInfo.FrameRate) alimenta um
+// fallback pelo número de frames: em containers com múltiplos streams de
+// saída (vídeo real + capa + várias faixas de áudio + legendas), o ffmpeg
+// pode reportar "out_time"/"out_time_ms" como "N/A" durante TODA a
+// conversão mesmo com "frame=" avançando normalmente — sem esse fallback a
+// fração calculada (outTime/durationSec) fica travada em 0 do início ao
+// fim, dando a impressão de que a barra de progresso não funciona. Quando
+// frameRate<=0 (não foi possível determinar no probe), o fallback nunca
+// dispara e o comportamento é o mesmo de antes (só o "1.0" final de
+// progress=end).
+func readProgress(r io.Reader, durationSec, frameRate float64, out chan<- float64) {
 	sc := bufio.NewScanner(r)
 	outTime := 0.0
+	haveOutTime := false
+	frameNum := 0.0
+	totalFrames := frameRate * durationSec
+
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
-		if strings.HasPrefix(line, "out_time_ms=") {
-			v, err := strconv.ParseFloat(strings.TrimPrefix(line, "out_time_ms="), 64)
-			if err == nil {
-				outTime = v / 1e6
+		switch {
+		case strings.HasPrefix(line, "frame="):
+			if v, err := strconv.ParseFloat(strings.TrimPrefix(line, "frame="), 64); err == nil {
+				frameNum = v
 			}
-		} else if strings.HasPrefix(line, "out_time=") {
+		case strings.HasPrefix(line, "out_time_ms="):
+			if v, err := strconv.ParseFloat(strings.TrimPrefix(line, "out_time_ms="), 64); err == nil {
+				outTime = v / 1e6
+				haveOutTime = true
+			}
+		case strings.HasPrefix(line, "out_time="):
 			if d, err := parseOutTime(strings.TrimPrefix(line, "out_time=")); err == nil {
 				outTime = d
+				haveOutTime = true
 			}
-		} else if line == "progress=end" {
+		case line == "progress=end":
 			out <- 1.0
 			// Não cai no bloco de reenvio abaixo: sem o "continue", a
 			// fração calculada a partir do outTime (possivelmente
@@ -420,8 +441,13 @@ func readProgress(r io.Reader, durationSec float64, out chan<- float64) {
 			// (ex.: 100% seguido de 90%) bem no fim da conversão.
 			continue
 		}
-		if durationSec > 0 {
+		switch {
+		case haveOutTime && durationSec > 0:
 			if r := outTime / durationSec; r >= 0 && r <= 1 {
+				out <- r
+			}
+		case totalFrames > 0:
+			if r := frameNum / totalFrames; r >= 0 && r <= 1 {
 				out <- r
 			}
 		}

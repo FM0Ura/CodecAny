@@ -45,6 +45,17 @@ type MediaInfo struct {
 	HasAudio      bool     `json:"has_audio"`
 	DurationSec   float64  `json:"duration_sec"`
 
+	// FrameRate é o quadros/segundo do stream de vídeo real (r_frame_rate,
+	// com fallback para avg_frame_rate), usado como reserva para o cálculo
+	// de progresso do transcode (ver transcode.go/readProgress) quando o
+	// ffmpeg reporta "out_time"/"out_time_ms" como "N/A" em -progress
+	// pipe:1 — observado em containers com múltiplos streams de saída
+	// (vídeo+capa+múltiplas faixas de áudio+legendas), onde "frame=" segue
+	// avançando normalmente mas o timestamp de saída nunca fica disponível.
+	// Zero quando não foi possível determinar (progresso então cai só no
+	// "1.0" final de progress=end, mesmo degrade seguro de antes).
+	FrameRate float64 `json:"frame_rate,omitempty"`
+
 	// VideoStreamIndex é o índice do stream de vídeo "real" escolhido pelo
 	// Probe entre TODOS os streams de tipo vídeo do container (ou seja, o
 	// índice usado pelo seletor ffmpeg "0:v:N"), ignorando streams marcados
@@ -74,10 +85,10 @@ type TargetSpec struct {
 	// (ver buildArgs em pkg/adapters/ffmpeg/transcode.go). Só existe como
 	// override por regra (ConvertSpec.Video.MaxHeight) — não há default
 	// global para este campo, seguindo o exemplo de uso do doc de propostas.
-	VideoMaxHeight int `json:"video_max_height,omitempty" yaml:"max_height,omitempty"`
-	AudioCodec    string `json:"audio_codec,omitempty" yaml:"audio_codec,omitempty"`
-	AudioBitrate  string `json:"audio_bitrate,omitempty" yaml:"audio_bitrate,omitempty"`
-	Container     string `json:"container,omitempty" yaml:"container,omitempty"`
+	VideoMaxHeight int    `json:"video_max_height,omitempty" yaml:"max_height,omitempty"`
+	AudioCodec     string `json:"audio_codec,omitempty" yaml:"audio_codec,omitempty"`
+	AudioBitrate   string `json:"audio_bitrate,omitempty" yaml:"audio_bitrate,omitempty"`
+	Container      string `json:"container,omitempty" yaml:"container,omitempty"`
 
 	// AutoApprove indica se o Job pode ser commitado automaticamente ao final
 	// da verificação de integridade (comportamento histórico, pré-v1.2) ou se

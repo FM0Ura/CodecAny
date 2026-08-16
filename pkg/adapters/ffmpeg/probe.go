@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/FM0Ura/codecany/pkg/core"
@@ -40,7 +41,13 @@ type ffprobeResult struct {
 		Width     int    `json:"width"`
 		Height    int    `json:"height"`
 		Duration  string `json:"duration"` // fallback: duração do stream (nem sempre preenchida)
-		Tags      struct {
+		// RFrameRate/AvgFrameRate vêm no formato "num/den" (ex.:
+		// "24000/1001"). Usados como reserva do cálculo de progresso do
+		// transcode quando o ffmpeg não consegue reportar "out_time" (ver
+		// core.MediaInfo.FrameRate).
+		RFrameRate   string `json:"r_frame_rate"`
+		AvgFrameRate string `json:"avg_frame_rate"`
+		Tags         struct {
 			// DURATION/DURATION-eng são tags no formato Matroska
 			// "HH:MM:SS.nnnnnnnnn" — comuns em MKVs produzidos por mkvmerge
 			// quando nem format.duration nem streams[].duration numérico
@@ -105,6 +112,10 @@ func (p *Prober) Probe(path string) (core.MediaInfo, error) {
 				videoStreamDuration = firstPositiveDuration(
 					parseDuration(s.Duration),
 					streamTagDuration(s.Tags.Duration, s.Tags.DurationEng),
+				)
+				mi.FrameRate = firstPositiveDuration(
+					parseFrameRate(s.RFrameRate),
+					parseFrameRate(s.AvgFrameRate),
 				)
 			}
 			videoIdx++
@@ -176,6 +187,29 @@ func parseDuration(s string) float64 {
 	var v float64
 	fmt.Sscanf(s, "%f", &v)
 	return v
+}
+
+// parseFrameRate interpreta o formato "num/den" do ffprobe (ex.:
+// "24000/1001", "25/1") em quadros/segundo. "0/0" (comum quando o ffprobe
+// não consegue determinar a taxa) e "N/A" retornam 0.
+func parseFrameRate(s string) float64 {
+	if s == "" || s == "N/A" {
+		return 0
+	}
+	num, den, ok := strings.Cut(s, "/")
+	if !ok {
+		v, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			return 0
+		}
+		return v
+	}
+	n, err1 := strconv.ParseFloat(num, 64)
+	d, err2 := strconv.ParseFloat(den, 64)
+	if err1 != nil || err2 != nil || d == 0 {
+		return 0
+	}
+	return n / d
 }
 
 // firstPositiveDuration retorna a primeira duração > 0 dentre os candidatos,

@@ -441,7 +441,7 @@ func TestReadProgress_EmitsFractionsWhenDurationKnown(t *testing.T) {
 	}, "\n")
 
 	out := make(chan float64, 32)
-	readProgress(strings.NewReader(input), 10.0, out)
+	readProgress(strings.NewReader(input), 10.0, 0, out)
 	close(out)
 
 	var got []float64
@@ -489,7 +489,7 @@ func TestReadProgress_NoIntermediateFractionsWhenDurationZero(t *testing.T) {
 	}, "\n")
 
 	out := make(chan float64, 32)
-	readProgress(strings.NewReader(input), 0, out)
+	readProgress(strings.NewReader(input), 0, 0, out)
 	close(out)
 
 	var got []float64
@@ -512,12 +512,116 @@ func TestReadProgress_ClampsFractionRange(t *testing.T) {
 	}, "\n")
 
 	out := make(chan float64, 32)
-	readProgress(strings.NewReader(input), 10.0, out)
+	readProgress(strings.NewReader(input), 10.0, 0, out)
 	close(out)
 
 	for v := range out {
 		if v < 0 || v > 1 {
 			t.Errorf("fração fora de [0,1]: %v", v)
+		}
+	}
+}
+
+// TestReadProgress_FallsBackToFrameCountWhenOutTimeUnavailable cobre o bug
+// relatado em produção (arquivo real, múltiplos streams de saída: vídeo
+// real + capa + 2 faixas de áudio + legendas): o ffmpeg reporta
+// "out_time_ms"/"out_time" como "N/A" durante TODA a conversão, mesmo com
+// "frame=" avançando normalmente — reproduzido rodando o comando ffmpeg
+// real fora do Go. Sem o fallback por frameRate, outTime nunca é definido e
+// a fração calculada (outTime/durationSec) fica travada em 0 do início ao
+// fim, fazendo a barra parecer 100% travada mesmo com o job realmente
+// avançando.
+func TestReadProgress_FallsBackToFrameCountWhenOutTimeUnavailable(t *testing.T) {
+	input := strings.Join([]string{
+		"frame=100",
+		"out_time_us=N/A",
+		"out_time_ms=N/A",
+		"out_time=N/A",
+		"speed=N/A",
+		"progress=continue",
+		"frame=500",
+		"out_time_us=N/A",
+		"out_time_ms=N/A",
+		"out_time=N/A",
+		"speed=N/A",
+		"progress=continue",
+		"frame=1000",
+		"out_time_us=N/A",
+		"out_time_ms=N/A",
+		"out_time=N/A",
+		"speed=N/A",
+		"progress=end",
+	}, "\n")
+
+	// duração=100s, frameRate=10fps -> totalFrames estimado=1000.
+	out := make(chan float64, 32)
+	readProgress(strings.NewReader(input), 100.0, 10.0, out)
+	close(out)
+
+	var got []float64
+	for v := range out {
+		got = append(got, v)
+	}
+	if len(got) == 0 {
+		t.Fatal("esperava frações vindas do fallback por frame=, obteve nenhuma")
+	}
+	foundIntermediate := false
+	for _, v := range got[:len(got)-1] {
+		if v > 0 && v < 1 {
+			foundIntermediate = true
+		}
+	}
+	if !foundIntermediate {
+		t.Errorf("esperava frações intermediárias do fallback frame/totalFrames antes do progress=end, got %v", got)
+	}
+	// frame=500 de totalFrames=1000 -> 0.5.
+	foundHalf := false
+	for _, v := range got {
+		if v > 0.49 && v < 0.51 {
+			foundHalf = true
+		}
+	}
+	if !foundHalf {
+		t.Errorf("esperava uma fração ~0.5 (frame=500/1000), got %v", got)
+	}
+	if got[len(got)-1] != 1.0 {
+		t.Errorf("último valor esperado 1.0 (progress=end), got %v", got[len(got)-1])
+	}
+}
+
+// TestReadProgress_PrefersOutTimeOverFrameFallbackWhenBothAvailable garante
+// que, assim que "out_time" válido chega, ele prevalece sobre o fallback por
+// frame= (mais preciso — não depende de frameRate ser uma média exata) em
+// todas as linhas subsequentes, mesmo que "frame=" continue aparecendo.
+func TestReadProgress_PrefersOutTimeOverFrameFallbackWhenBothAvailable(t *testing.T) {
+	input := strings.Join([]string{
+		"frame=100",
+		"out_time_ms=3000000", // 3s de 100s -> 0.03, bem diferente do fallback por frame (100/1000=0.10)
+		"progress=continue",
+		"frame=200", // out_time já é conhecido: não deve "regredir" para o fallback por frame (200/1000=0.20)
+		"progress=continue",
+		"progress=end",
+	}, "\n")
+
+	out := make(chan float64, 32)
+	readProgress(strings.NewReader(input), 100.0, 10.0, out)
+	close(out)
+
+	var got []float64
+	for v := range out {
+		got = append(got, v)
+	}
+	// Antes do out_time chegar, a primeira linha ("frame=100") só tem o
+	// fallback por frame disponível (100/1000=0.10) — esperado.
+	if len(got) < 1 || got[0] < 0.09 || got[0] > 0.11 {
+		t.Errorf("esperava a 1ª fração vinda do fallback por frame (~0.10) antes de out_time chegar, got %v", got)
+	}
+	// A partir daqui (out_time conhecido), tudo deve ficar em ~0.03, mesmo
+	// com "frame=200" (que sozinho daria 0.20 pelo fallback) aparecendo
+	// no meio — out_time nunca deve "regredir" para o fallback por frame.
+	for _, v := range got[1 : len(got)-1] {
+		if v < 0.02 || v > 0.04 {
+			t.Errorf("esperava fração baseada em out_time (~0.03) após out_time conhecido, got %v em %v", v, got)
 		}
 	}
 }
