@@ -987,3 +987,73 @@ func TestEngineRollbackPersistsMetrics(t *testing.T) {
 		t.Errorf("SizeMetrics.SavedBytes esperado 50, obteve %d (métricas não persistidas no rollback)", job.SizeMetrics.SavedBytes)
 	}
 }
+
+// TestEngineRescanDirs cobre o item 10 da proposta do painel de controle
+// (Fase C): Engine.RescanDirs reusa ListWatchedDirs + DiscoverFiles +
+// HandleDiscovered (mesmo padrão de RunOnce) para enfileirar arquivos já
+// presentes num diretório monitorado persistido.
+func TestEngineRescanDirs(t *testing.T) {
+	eng, _, mediaPath, _ := setupEngine(t, 1000, 500)
+	dir := filepath.Dir(mediaPath)
+
+	// Nenhum diretório monitorado ainda: RescanDirs não encontra nada nem
+	// falha.
+	if err := eng.RescanDirs(); err != nil {
+		t.Fatalf("RescanDirs sem diretórios monitorados: %v", err)
+	}
+	if job, _ := eng.store.FindByPath(mediaPath); job != nil {
+		t.Fatalf("job não deveria existir antes de AddWatchedDir: %+v", job)
+	}
+
+	if err := eng.AddWatchedDir(dir); err != nil {
+		t.Fatalf("AddWatchedDir: %v", err)
+	}
+	got, err := eng.ListWatchedDirs()
+	if err != nil {
+		t.Fatalf("ListWatchedDirs: %v", err)
+	}
+	if len(got) != 1 || got[0] != dir {
+		t.Fatalf("esperava [%s], obteve %v", dir, got)
+	}
+
+	if err := eng.RescanDirs(); err != nil {
+		t.Fatalf("RescanDirs: %v", err)
+	}
+
+	job, err := eng.store.FindByPath(mediaPath)
+	if err != nil {
+		t.Fatalf("FindByPath: %v", err)
+	}
+	if job == nil {
+		t.Fatal("esperava job enfileirado após RescanDirs, obteve nil")
+	}
+	if job.Status != StatusQueued {
+		t.Errorf("status = %v, want QUEUED", job.Status)
+	}
+
+	// RescanDirs de novo não duplica o job (HandleDiscovered já ignora
+	// caminhos com job existente que não FAILED/ROLLED_BACK).
+	if err := eng.RescanDirs(); err != nil {
+		t.Fatalf("segundo RescanDirs: %v", err)
+	}
+	jobs, err := eng.store.ListJobs(JobFilter{})
+	if err != nil {
+		t.Fatalf("ListJobs: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("esperava 1 job após dois RescanDirs, obteve %d: %v", len(jobs), jobs)
+	}
+
+	// RemoveWatchedDir some da lista e o Watcher para de monitorar; RescanDirs
+	// continua funcionando (não depende do Watcher, só do Store).
+	if err := eng.RemoveWatchedDir(dir); err != nil {
+		t.Fatalf("RemoveWatchedDir: %v", err)
+	}
+	got, err = eng.ListWatchedDirs()
+	if err != nil {
+		t.Fatalf("ListWatchedDirs após remoção: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("esperava lista vazia após RemoveWatchedDir, obteve %v", got)
+	}
+}

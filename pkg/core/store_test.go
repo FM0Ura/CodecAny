@@ -408,3 +408,74 @@ func TestNextPendingJobConcurrentClaimsAreExclusive(t *testing.T) {
 		}
 	}
 }
+
+// TestStoreWatchedDirsCRUD cobre o item 6 da proposta do painel de controle
+// (Fase C): tabela watched_dirs e os métodos Add/Remove/List do Store.
+func TestStoreWatchedDirsCRUD(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	dirs, err := store.ListWatchedDirs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dirs) != 0 {
+		t.Fatalf("esperava lista vazia num store novo, obteve %v", dirs)
+	}
+
+	if err := store.AddWatchedDir("/media/series"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddWatchedDir("/media/movies"); err != nil {
+		t.Fatal(err)
+	}
+
+	dirs, err = store.ListWatchedDirs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dirs) != 2 {
+		t.Fatalf("esperava 2 diretórios, obteve %d: %v", len(dirs), dirs)
+	}
+	// ListWatchedDirs ordena alfabeticamente por path (saída determinística).
+	if dirs[0].Path != "/media/movies" || dirs[1].Path != "/media/series" {
+		t.Errorf("ordem alfabética inesperada: %v", dirs)
+	}
+	for _, d := range dirs {
+		if d.AddedAt.IsZero() {
+			t.Errorf("added_at zerado para %s", d.Path)
+		}
+	}
+
+	// Reinserir um path já existente (upsert) não duplica a linha.
+	if err := store.AddWatchedDir("/media/movies"); err != nil {
+		t.Fatal(err)
+	}
+	dirs, err = store.ListWatchedDirs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dirs) != 2 {
+		t.Fatalf("upsert de path existente deveria manter 2 diretórios, obteve %d: %v", len(dirs), dirs)
+	}
+
+	if err := store.RemoveWatchedDir("/media/movies"); err != nil {
+		t.Fatal(err)
+	}
+	dirs, err = store.ListWatchedDirs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dirs) != 1 || dirs[0].Path != "/media/series" {
+		t.Fatalf("esperava só /media/series restante, obteve %v", dirs)
+	}
+
+	// Remover um path que não existe não é erro.
+	if err := store.RemoveWatchedDir("/media/nao-existe"); err != nil {
+		t.Fatalf("RemoveWatchedDir de path inexistente não deveria falhar: %v", err)
+	}
+}

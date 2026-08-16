@@ -76,6 +76,11 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_path ON jobs(path);
+
+CREATE TABLE IF NOT EXISTS watched_dirs (
+    path       TEXT PRIMARY KEY,
+    added_at   TEXT NOT NULL
+);
 `
 
 // jobColumns lista as colunas lidas por todo SELECT que reconstrói um *Job
@@ -194,6 +199,58 @@ func (s *Store) CountByStatus() (map[JobStatus]int, error) {
 		counts[status] = n
 	}
 	return counts, rows.Err()
+}
+
+// WatchedDir representa uma entrada da tabela watched_dirs (painel de
+// controle, Fase C — Diretórios Monitorados): um diretório persistido a
+// monitorar e o instante em que foi adicionado. Diferente de -dir do
+// cmd/cli (efêmero, nunca toca esta tabela), watched_dirs é a fonte de
+// verdade persistida usada pelo cmd/server para recarregar os diretórios
+// monitorados a cada boot (ver Engine.ListWatchedDirs/AddWatchedDir).
+type WatchedDir struct {
+	Path    string
+	AddedAt time.Time
+}
+
+// AddWatchedDir persiste path como monitorado. Idempotente: reinserir um
+// path já existente apenas atualiza added_at (upsert via
+// ON CONFLICT), não é erro.
+func (s *Store) AddWatchedDir(path string) error {
+	_, err := s.db.Exec(
+		`INSERT INTO watched_dirs (path, added_at) VALUES (?, ?)
+		 ON CONFLICT(path) DO UPDATE SET added_at=excluded.added_at`,
+		path, time.Now().UTC().Format(time.RFC3339),
+	)
+	return err
+}
+
+// RemoveWatchedDir remove path da lista de diretórios monitorados
+// persistidos. Remover um path que não existia não é erro (DELETE sem
+// linhas afetadas não falha).
+func (s *Store) RemoveWatchedDir(path string) error {
+	_, err := s.db.Exec(`DELETE FROM watched_dirs WHERE path=?`, path)
+	return err
+}
+
+// ListWatchedDirs lista todos os diretórios monitorados persistidos, em
+// ordem alfabética de path (saída determinística para a UI/testes).
+func (s *Store) ListWatchedDirs() ([]WatchedDir, error) {
+	rows, err := s.db.Query(`SELECT path, added_at FROM watched_dirs ORDER BY path ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []WatchedDir
+	for rows.Next() {
+		var d WatchedDir
+		var addedRaw string
+		if err := rows.Scan(&d.Path, &addedRaw); err != nil {
+			return nil, err
+		}
+		d.AddedAt, _ = time.Parse(time.RFC3339, addedRaw)
+		out = append(out, d)
+	}
+	return out, rows.Err()
 }
 
 // maxClaimRetries limita as tentativas de NextPendingJob ao perder a corrida
