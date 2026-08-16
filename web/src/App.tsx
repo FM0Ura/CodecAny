@@ -1,6 +1,7 @@
 import { Route, Routes } from "react-router-dom";
 import { AppLayout } from "./components/AppLayout";
 import { Dashboard } from "./routes/Dashboard";
+import { Directories } from "./routes/Directories";
 import { Placeholder } from "./routes/Placeholder";
 import { DashboardSummaryProvider } from "./context/DashboardSummaryContext";
 
@@ -15,10 +16,7 @@ export default function App() {
             path="aprovacao"
             element={<Placeholder screen="Aguardando Aprovação" phase="Fase B" />}
           />
-          <Route
-            path="diretorios"
-            element={<Placeholder screen="Diretórios Monitorados" phase="Fase C" />}
-          />
+          <Route path="diretorios" element={<Directories />} />
           <Route path="regras" element={<Placeholder screen="Regras" phase="Fase D" />} />
           <Route
             path="health-check"

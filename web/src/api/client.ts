@@ -1,4 +1,4 @@
-import type { DashboardSummary, Job, JobEvent, ServerStatus } from "./types";
+import type { DashboardSummary, FsBrowseResult, Job, JobEvent, ServerStatus } from "./types";
 
 /**
  * Erro lançado quando uma resposta HTTP não é ok (status fora de 2xx) ou o
@@ -15,6 +15,21 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Extrai a mensagem de erro do corpo `{"error": "..."}` que
+ * writeJSONError (cmd/server/router.go) escreve em toda resposta não-2xx.
+ * Cai para uma mensagem genérica se o corpo não for esse shape.
+ */
+async function extractErrorMessage(res: Response): Promise<string> {
+  try {
+    const body = (await res.json()) as { error?: string };
+    if (body?.error) return body.error;
+  } catch {
+    // corpo não é JSON (ou já foi consumido) — mensagem genérica abaixo.
+  }
+  return `Requisição falhou (${res.status} ${res.statusText})`;
+}
+
 async function getJSON<T>(path: string): Promise<T> {
   let res: Response;
   try {
@@ -23,12 +38,47 @@ async function getJSON<T>(path: string): Promise<T> {
     throw new ApiError("Não foi possível contatar o servidor CodecAny.");
   }
   if (!res.ok) {
-    throw new ApiError(`Requisição falhou (${res.status} ${res.statusText})`, res.status);
+    throw new ApiError(await extractErrorMessage(res), res.status);
   }
   try {
     return (await res.json()) as T;
   } catch {
     throw new ApiError("Resposta do servidor não é um JSON válido.");
+  }
+}
+
+/** POST com corpo JSON opcional, decodificando a resposta como T. */
+async function postJSON<T>(path: string, body?: unknown): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+  } catch {
+    throw new ApiError("Não foi possível contatar o servidor CodecAny.");
+  }
+  if (!res.ok) {
+    throw new ApiError(await extractErrorMessage(res), res.status);
+  }
+  try {
+    return (await res.json()) as T;
+  } catch {
+    throw new ApiError("Resposta do servidor não é um JSON válido.");
+  }
+}
+
+/** DELETE sem corpo de resposta relevante. */
+async function del(path: string): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(path, { method: "DELETE" });
+  } catch {
+    throw new ApiError("Não foi possível contatar o servidor CodecAny.");
+  }
+  if (!res.ok) {
+    throw new ApiError(await extractErrorMessage(res), res.status);
   }
 }
 
@@ -95,4 +145,39 @@ export function subscribeToEvents(
   }
 
   return () => source.close();
+}
+
+// --- Diretórios Monitorados (Fase C) -------------------------------------
+
+/** Lista os diretórios monitorados persistidos (watched_dirs). */
+export function getDirs(): Promise<string[]> {
+  return getJSON<string[]>("/api/dirs");
+}
+
+/**
+ * Adiciona um diretório à lista de monitorados. O backend valida que path
+ * existe e é diretório (400 caso contrário, ou se já estiver monitorado).
+ */
+export function addDir(path: string): Promise<{ path: string }> {
+  return postJSON<{ path: string }>("/api/dirs", { path });
+}
+
+/** Remove um diretório da lista de monitorados. */
+export function removeDir(path: string): Promise<void> {
+  return del(`/api/dirs?path=${encodeURIComponent(path)}`);
+}
+
+/** Redescobre arquivos já presentes nos diretórios monitorados. */
+export function rescanDirs(): Promise<void> {
+  return postJSON("/api/dirs/rescan");
+}
+
+/**
+ * Navega o filesystem do servidor a partir de path (só diretórios,
+ * ordenados). path="" retorna a raiz. Usado pelo modal de "Adicionar
+ * diretório" — navegador em vez de campo de texto puro.
+ */
+export function browseFs(path: string): Promise<FsBrowseResult> {
+  const qs = path ? `?path=${encodeURIComponent(path)}` : "";
+  return getJSON<FsBrowseResult>(`/api/fs/browse${qs}`);
 }
