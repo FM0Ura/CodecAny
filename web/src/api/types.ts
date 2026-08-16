@@ -105,3 +105,13 @@ export interface ServerStatus {
   rules_path: string;
   workers: number;
 }
+
+/** Status de um arquivo verificado por POST /api/health-check (Fase E). */
+export type HealthCheckStatus = "ok" | "corrupted";
+
+/** Espelha core.HealthCheckResult (pkg/core/healthcheck.go). */
+export interface HealthCheckResult {
+  path: string;
+  status: HealthCheckStatus;
+  error?: string;
+}

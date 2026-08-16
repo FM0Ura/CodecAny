@@ -97,6 +97,17 @@ func main() {
 		StartedAt:   time.Now(),
 		Assets:      assets,
 		Log:         log,
+		// Verifier: instância própria (independente da que buildEngine passou
+		// para core.NewEngine) usada só por POST /api/health-check (Fase E) —
+		// ffmpeg.Verifier não guarda estado entre chamadas, então duas
+		// instâncias são equivalentes a uma só.
+		Verifier: ffmpeg.NewVerifier(),
+		// Dirs: snapshot efêmero de -dir capturado no boot (mesmo dirs já
+		// usado acima em eng.WatchDir), usado como fallback quando o request
+		// de health-check não informa dirs/files — ver
+		// cmd/server/healthcheck.go. Fase C ainda não persiste diretórios
+		// monitorados neste branch.
+		Dirs: dirs,
 	}
 
 	httpServer := &http.Server{

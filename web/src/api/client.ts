@@ -1,4 +1,4 @@
-import type { DashboardSummary, Job, JobEvent, ServerStatus } from "./types";
+import type { DashboardSummary, HealthCheckResult, Job, JobEvent, ServerStatus } from "./types";
 
 /**
  * Erro lançado quando uma resposta HTTP não é ok (status fora de 2xx) ou o
@@ -57,6 +57,46 @@ export function getJobs(filter: JobFilter = {}): Promise<Job[]> {
 
 export function getJob(id: string): Promise<Job> {
   return getJSON<Job>(`/api/jobs/${encodeURIComponent(id)}`);
+}
+
+export interface HealthCheckRequest {
+  dirs?: string[];
+  files?: string[];
+}
+
+/**
+ * Dispara POST /api/health-check (Fase E). Síncrono no servidor — pode
+ * demorar bastante para bibliotecas grandes; a UI deve mostrar um indicador
+ * de carregamento enquanto aguarda. Corpo vazio ({}) usa o fallback de
+ * diretórios monitorados configurados no boot do servidor (ver
+ * cmd/server/healthcheck.go).
+ */
+export async function runHealthCheck(req: HealthCheckRequest = {}): Promise<HealthCheckResult[]> {
+  let res: Response;
+  try {
+    res = await fetch("/api/health-check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(req),
+    });
+  } catch {
+    throw new ApiError("Não foi possível contatar o servidor CodecAny.");
+  }
+  if (!res.ok) {
+    let message = `Requisição falhou (${res.status} ${res.statusText})`;
+    try {
+      const body = (await res.json()) as { error?: string };
+      if (body.error) message = body.error;
+    } catch {
+      // corpo de erro não é JSON — mantém a mensagem genérica.
+    }
+    throw new ApiError(message, res.status);
+  }
+  try {
+    return (await res.json()) as HealthCheckResult[];
+  } catch {
+    throw new ApiError("Resposta do servidor não é um JSON válido.");
+  }
 }
 
 const EVENT_KINDS: JobEvent["kind"][] = [

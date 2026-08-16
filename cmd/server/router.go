@@ -37,7 +37,14 @@ type dashboardSummary struct {
 
 // App agrupa as dependências do roteamento HTTP da Fase A (Engine real,
 // Broadcaster de SSE, configuração ativa, instante de start para uptime_s e
-// o handler dos estáticos embutidos do SPA).
+// o handler dos estáticos embutidos do SPA), mais as adições da Fase E:
+// Verifier (usado por POST /api/health-check) e Dirs, os diretórios
+// monitorados no boot deste processo (-dir), usados como fallback de
+// diretórios quando o request de health-check não informa dirs/files — ver
+// handleHealthCheck em healthcheck.go. A Fase C (persistência de diretórios
+// monitorados via tabela watched_dirs) ainda não existe neste branch; Dirs é
+// só o snapshot efêmero de -dir capturado em main.go, mesmo padrão já usado
+// por eng.WatchDir na Fase A.
 type App struct {
 	Engine      *core.Engine
 	Broadcaster *Broadcaster
@@ -45,6 +52,8 @@ type App struct {
 	StartedAt   time.Time
 	Assets      http.Handler
 	Log         *slog.Logger
+	Verifier    core.MediaVerifier
+	Dirs        []string
 }
 
 // routes registra as rotas da Fase A (API somente-leitura + SSE + estáticos)
@@ -56,6 +65,7 @@ func (a *App) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/dashboard/summary", a.handleDashboardSummary)
 	mux.HandleFunc("GET /api/jobs", a.handleListJobs)
 	mux.HandleFunc("GET /api/jobs/{id}", a.handleGetJob)
+	mux.HandleFunc("POST /api/health-check", a.handleHealthCheck)
 	mux.HandleFunc("GET /api/events", a.Broadcaster.ServeHTTP)
 	mux.Handle("/", a.Assets)
 	return mux

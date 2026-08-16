@@ -1,6 +1,8 @@
 import { Route, Routes } from "react-router-dom";
 import { AppLayout } from "./components/AppLayout";
 import { Dashboard } from "./routes/Dashboard";
+import { HealthCheck } from "./routes/HealthCheck";
+import { History } from "./routes/History";
 import { Placeholder } from "./routes/Placeholder";
 import { DashboardSummaryProvider } from "./context/DashboardSummaryContext";
 
@@ -20,11 +22,8 @@ export default function App() {
             element={<Placeholder screen="Diretórios Monitorados" phase="Fase C" />}
           />
           <Route path="regras" element={<Placeholder screen="Regras" phase="Fase D" />} />
-          <Route
-            path="health-check"
-            element={<Placeholder screen="Health Check" phase="Fase E" />}
-          />
-          <Route path="historico" element={<Placeholder screen="Histórico" phase="Fase E" />} />
+          <Route path="health-check" element={<HealthCheck />} />
+          <Route path="historico" element={<History />} />
           <Route path="*" element={<Placeholder screen="Página não encontrada" phase="—" />} />
         </Route>
       </Routes>
