@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { subscribeToEvents } from "../api/client";
-import type { JobEvent, JobStatus } from "../api/types";
+import { ApiError, getJob, subscribeToEvents } from "../api/client";
+import type { Job, JobEvent, JobStatus } from "../api/types";
 import { Chip } from "../components/Chip";
 import { Panel } from "../components/Panel";
 import { StatTile } from "../components/StatTile";
 import { Meter, BlockMeter } from "../components/Meter";
 import { LiveDot } from "../components/TopBar";
+import { JobMetadataDialog } from "../components/JobMetadataDialog";
 import { useDashboardSummary } from "../context/DashboardSummaryContext";
 import { basename, formatBytes, formatPct } from "../lib/format";
 import "./Dashboard.css";
@@ -39,12 +40,14 @@ const EVENT_CHIP: Record<JobEvent["kind"], { variant: Parameters<typeof Chip>[0]
   OnJobComplete: { variant: "completed", label: "Concluído" },
   OnJobError: { variant: "failed", label: "Falhou" },
   OnJobAwaitingApproval: { variant: "awaiting", label: "Aguardando aprovação" },
+  OnJobRequeued: { variant: "queued", label: "Reenfileirado" },
 };
 
 const REFRESH_ON_KINDS = new Set<JobEvent["kind"]>([
   "OnJobComplete",
   "OnJobError",
   "OnJobAwaitingApproval",
+  "OnJobRequeued",
 ]);
 
 const MAX_VISIBLE_JOBS = 15;
@@ -54,8 +57,24 @@ export function Dashboard() {
   const [liveEvents, setLiveEvents] = useState<Record<string, JobEvent>>({});
   const [order, setOrder] = useState<string[]>([]);
   const [sseStatus, setSseStatus] = useState<"connecting" | "open" | "error">("connecting");
+  const [selectedJob, setSelectedJob] = useState<Job | null>(null);
+  const [selectedLoading, setSelectedLoading] = useState<string | null>(null);
+  const [selectedError, setSelectedError] = useState<string | null>(null);
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
+
+  async function openJobDetail(jobId: string) {
+    setSelectedLoading(jobId);
+    setSelectedError(null);
+    try {
+      const job = await getJob(jobId);
+      setSelectedJob(job);
+    } catch (err) {
+      setSelectedError(err instanceof ApiError ? err.message : "Falha ao carregar detalhes do job.");
+    } finally {
+      setSelectedLoading((prev) => (prev === jobId ? null : prev));
+    }
+  }
 
   useEffect(() => {
     const unsubscribe = subscribeToEvents(
@@ -149,6 +168,17 @@ export function Dashboard() {
         </>
       )}
 
+      {selectedError ? (
+        <div className="dashboard__banner" role="alert">
+          <span>{selectedError}</span>
+          <span className="dashboard__banner-actions">
+            <button type="button" onClick={() => setSelectedError(null)}>
+              Fechar
+            </button>
+          </span>
+        </div>
+      ) : null}
+
       <Panel
         title={
           <span
@@ -174,7 +204,17 @@ export function Dashboard() {
               if (!event) return null;
               const chipInfo = EVENT_CHIP[event.kind];
               return (
-                <div className="job-row" key={jobId}>
+                <div
+                  className="job-row"
+                  key={jobId}
+                  onClick={() => openJobDetail(jobId)}
+                  tabIndex={0}
+                  role="button"
+                  aria-label={`Ver detalhes de ${basename(event.file_path)}`}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") openJobDetail(jobId);
+                  }}
+                >
                   <div className="job-row__head">
                     <span className="job-row__path" title={event.file_path}>
                       {basename(event.file_path)}
@@ -201,12 +241,17 @@ export function Dashboard() {
                       <span>({formatPct(event.metrics.compression_ratio_pct)})</span>
                     </div>
                   ) : null}
+                  {selectedLoading === jobId ? (
+                    <span className="job-row__meta">Carregando detalhes…</span>
+                  ) : null}
                 </div>
               );
             })}
           </div>
         )}
       </Panel>
+
+      {selectedJob ? <JobMetadataDialog job={selectedJob} onClose={() => setSelectedJob(null)} /> : null}
     </div>
   );
 }

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ApiError, getJobs, subscribeToEvents } from "../api/client";
+import { ApiError, getJobs, requeueJob, subscribeToEvents } from "../api/client";
 import type { Job, JobStatus } from "../api/types";
 import { Panel } from "../components/Panel";
 import { StatusChip } from "../components/Chip";
-import { basename, formatBytes, formatDateTime, formatDuration, formatPct } from "../lib/format";
+import { JobMetadataDialog } from "../components/JobMetadataDialog";
+import { basename, formatBytes, formatDateTime } from "../lib/format";
 import "./Queue.css";
 
 const STATUS_LABEL: Record<JobStatus, string> = {
@@ -36,7 +37,13 @@ const LIVE_STATUSES = new Set<JobStatus>(["IN_PROGRESS", "TESTING", "FINALIZING"
 
 // Eventos que mudam o status/métricas persistidas do job — disparam refetch
 // da lista (mesmo padrão de REFRESH_ON_KINDS em routes/Dashboard.tsx).
-const REFETCH_KINDS = new Set(["OnJobStart", "OnJobComplete", "OnJobError", "OnJobAwaitingApproval"]);
+const REFETCH_KINDS = new Set([
+  "OnJobStart",
+  "OnJobComplete",
+  "OnJobError",
+  "OnJobAwaitingApproval",
+  "OnJobRequeued",
+]);
 
 function InlineProgress({ value }: { value: number }) {
   const pct = Math.max(0, Math.min(1, value)) * 100;
@@ -57,6 +64,8 @@ export function Queue() {
   const [statusFilter, setStatusFilter] = useState<JobStatus | "">("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [liveProgress, setLiveProgress] = useState<Record<string, number>>({});
+  const [requeueBusy, setRequeueBusy] = useState(false);
+  const [requeueError, setRequeueError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -92,6 +101,24 @@ export function Queue() {
   }, []);
 
   const selectedJob = jobs.find((j) => j.id === selectedId) ?? null;
+
+  function selectJob(id: string) {
+    setRequeueError(null);
+    setSelectedId(id);
+  }
+
+  async function handleRequeue(id: string) {
+    setRequeueBusy(true);
+    setRequeueError(null);
+    try {
+      await requeueJob(id);
+      load(); // status vira QUEUED via refetch; job continua visível, não é removido da lista
+    } catch (err) {
+      setRequeueError(err instanceof ApiError ? err.message : "Falha ao reenfileirar o job.");
+    } finally {
+      setRequeueBusy(false);
+    }
+  }
 
   return (
     <div className="queue">
@@ -150,12 +177,12 @@ export function Queue() {
                     <tr
                       key={job.id}
                       className="queue-table__row"
-                      onClick={() => setSelectedId(job.id)}
+                      onClick={() => selectJob(job.id)}
                       tabIndex={0}
                       role="button"
                       aria-label={`Ver detalhes de ${basename(job.path)}`}
                       onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") setSelectedId(job.id);
+                        if (e.key === "Enter" || e.key === " ") selectJob(job.id);
                       }}
                     >
                       <td>
@@ -189,147 +216,18 @@ export function Queue() {
       </Panel>
 
       {selectedJob ? (
-        <JobDrawer job={selectedJob} onClose={() => setSelectedId(null)} />
+        <JobMetadataDialog
+          job={selectedJob}
+          onClose={() => setSelectedId(null)}
+          onRequeue={
+            selectedJob.status === "FAILED" || selectedJob.status === "ROLLED_BACK"
+              ? () => handleRequeue(selectedJob.id)
+              : undefined
+          }
+          busy={requeueBusy}
+          actionError={requeueError ?? undefined}
+        />
       ) : null}
-    </div>
-  );
-}
-
-function JobDrawer({ job, onClose }: { job: Job; onClose: () => void }) {
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
-
-  const m = job.media_info;
-  const t = job.target;
-
-  return (
-    <div className="job-drawer__overlay" onClick={onClose}>
-      <aside
-        className="job-drawer"
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Detalhes do job ${basename(job.path)}`}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="job-drawer__head">
-          <div>
-            <span className="job-drawer__path font-mono" title={job.path}>
-              {basename(job.path)}
-            </span>
-            <StatusChip status={job.status} />
-          </div>
-          <button type="button" className="job-drawer__close" onClick={onClose} aria-label="Fechar">
-            ×
-          </button>
-        </div>
-
-        <section className="job-drawer__section">
-          <h3>Identificação</h3>
-          <dl className="job-drawer__dl">
-            <dt>ID</dt>
-            <dd className="font-mono">{job.id}</dd>
-            <dt>Caminho completo</dt>
-            <dd className="font-mono job-drawer__break">{job.path}</dd>
-            <dt>Driver</dt>
-            <dd className="font-mono">{job.driver || "—"}</dd>
-          </dl>
-        </section>
-
-        <section className="job-drawer__section">
-          <h3>Tamanho</h3>
-          <dl className="job-drawer__dl">
-            <dt>Original</dt>
-            <dd className="numeric">{formatBytes(job.size_metrics?.original_size_bytes ?? 0)}</dd>
-            <dt>Convertido</dt>
-            <dd className="numeric">
-              {job.size_metrics?.converted_size_bytes ? formatBytes(job.size_metrics.converted_size_bytes) : "—"}
-            </dd>
-            <dt>Economia</dt>
-            <dd className="numeric">
-              {job.size_metrics?.saved_bytes ? formatBytes(job.size_metrics.saved_bytes) : "—"} (
-              {formatPct(job.size_metrics?.compression_ratio_pct ?? 0)})
-            </dd>
-          </dl>
-        </section>
-
-        <section className="job-drawer__section">
-          <h3>MediaInfo (origem)</h3>
-          {m ? (
-            <dl className="job-drawer__dl">
-              <dt>Container</dt>
-              <dd className="font-mono">{m.container || "—"}</dd>
-              <dt>Codec de vídeo</dt>
-              <dd className="font-mono">{m.video_codec || "—"}</dd>
-              <dt>Resolução</dt>
-              <dd className="numeric">{m.width && m.height ? `${m.width}×${m.height}` : "—"}</dd>
-              <dt>Bitrate de vídeo</dt>
-              <dd className="numeric">{m.video_bitrate ? `${Math.round(m.video_bitrate / 1000)} kbps` : "—"}</dd>
-              <dt>Codecs de áudio</dt>
-              <dd className="font-mono">{m.audio_codecs?.length ? m.audio_codecs.join(", ") : "—"}</dd>
-              <dt>Duração</dt>
-              <dd className="numeric">{formatDuration(m.duration_sec)}</dd>
-              <dt>Frame rate</dt>
-              <dd className="numeric">{m.frame_rate ? `${m.frame_rate.toFixed(2)} fps` : "—"}</dd>
-            </dl>
-          ) : (
-            <span className="queue__empty-note">Sem MediaInfo.</span>
-          )}
-        </section>
-
-        <section className="job-drawer__section">
-          <h3>TargetSpec (alvo)</h3>
-          {t ? (
-            <dl className="job-drawer__dl">
-              <dt>Codec de vídeo</dt>
-              <dd className="font-mono">{t.video_codec || "—"}</dd>
-              <dt>CRF</dt>
-              <dd className="numeric">{typeof t.video_crf === "number" ? t.video_crf : "—"}</dd>
-              <dt>Preset</dt>
-              <dd className="font-mono">{t.video_preset || "—"}</dd>
-              <dt>Lossless</dt>
-              <dd>{t.video_lossless ? "Sim" : "Não"}</dd>
-              <dt>HWAccel</dt>
-              <dd className="font-mono">{t.video_hwaccel || "—"}</dd>
-              <dt>Altura máxima</dt>
-              <dd className="numeric">{t.video_max_height ? `${t.video_max_height}p` : "—"}</dd>
-              <dt>Codec de áudio</dt>
-              <dd className="font-mono">{t.audio_codec || "—"}</dd>
-              <dt>Bitrate de áudio</dt>
-              <dd className="font-mono">{t.audio_bitrate || "—"}</dd>
-              <dt>Container</dt>
-              <dd className="font-mono">{t.container || "—"}</dd>
-              <dt>Auto-aprovação</dt>
-              <dd>{t.auto_approve ? "Sim" : "Não"}</dd>
-            </dl>
-          ) : (
-            <span className="queue__empty-note">Sem TargetSpec.</span>
-          )}
-        </section>
-
-        <section className="job-drawer__section">
-          <h3>Timestamps</h3>
-          <dl className="job-drawer__dl">
-            <dt>Criado em</dt>
-            <dd className="numeric">{formatDateTime(job.created_at)}</dd>
-            <dt>Iniciado em</dt>
-            <dd className="numeric">{formatDateTime(job.started_at)}</dd>
-            <dt>Finalizado em</dt>
-            <dd className="numeric">{formatDateTime(job.finished_at)}</dd>
-          </dl>
-        </section>
-
-        {job.error ? (
-          <section className="job-drawer__section">
-            <h3>Erro</h3>
-            <p className="job-drawer__error">{job.error}</p>
-          </section>
-        ) : null}
-      </aside>
     </div>
   );
 }

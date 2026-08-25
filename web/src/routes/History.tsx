@@ -3,6 +3,7 @@ import { ApiError, getJobs } from "../api/client";
 import type { Job, JobStatus } from "../api/types";
 import { Panel } from "../components/Panel";
 import { StatusChip } from "../components/Chip";
+import { JobMetadataDialog } from "../components/JobMetadataDialog";
 import { formatBytes, formatPct, basename } from "../lib/format";
 import "./History.css";
 
@@ -66,6 +67,7 @@ export function History() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -115,6 +117,8 @@ export function History() {
     () => jobs.reduce((acc, j) => acc + Math.max(0, j.size_metrics?.saved_bytes ?? 0), 0),
     [jobs],
   );
+
+  const selectedJob = jobs.find((j) => j.id === selectedId) ?? null;
 
   return (
     <div className="history">
@@ -199,7 +203,17 @@ export function History() {
               </thead>
               <tbody>
                 {jobs.map((job) => (
-                  <tr key={job.id}>
+                  <tr
+                    key={job.id}
+                    className="history__row"
+                    onClick={() => setSelectedId(job.id)}
+                    tabIndex={0}
+                    role="button"
+                    aria-label={`Ver detalhes de ${basename(job.path)}`}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") setSelectedId(job.id);
+                    }}
+                  >
                     <td className="numeric">{job.id.slice(0, 8)}</td>
                     <td className="history__path" title={job.path}>
                       {basename(job.path)}
@@ -223,6 +237,8 @@ export function History() {
           </div>
         )}
       </Panel>
+
+      {selectedJob ? <JobMetadataDialog job={selectedJob} onClose={() => setSelectedId(null)} /> : null}
     </div>
   );
 }

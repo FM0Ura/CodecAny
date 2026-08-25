@@ -43,6 +43,7 @@ func main() {
 	approveAll := flag.Bool("approve-all", false, "aprova todos os jobs aguardando aprovação e sai")
 	rejectID := flag.String("reject", "", "rejeita o job com o ID informado e sai")
 	rejectAll := flag.Bool("reject-all", false, "rejeita todos os jobs aguardando aprovação e sai")
+	requeueID := flag.String("requeue", "", "reenfileira o job FAILED/ROLLED_BACK com o ID informado (prioridade máxima) e sai")
 
 	// -history (Fase 6): relatório filtrável do histórico de jobs, mesmo
 	// dispatcher administrativo da Fase 1 (não sobe worker/watcher).
@@ -55,7 +56,7 @@ func main() {
 	healthCheck := flag.Bool("health-check", false, "varre -dir/-file em busca de arquivos corrompidos (sem transcodificar) e sai")
 	flag.Parse()
 
-	if *listStaged || *approveID != "" || *approveAll || *rejectID != "" || *rejectAll || *history {
+	if *listStaged || *approveID != "" || *approveAll || *rejectID != "" || *rejectAll || *requeueID != "" || *history {
 		if *history && *historySince != "" {
 			if _, err := time.ParseDuration(*historySince); err != nil {
 				fmt.Fprintln(os.Stderr, "erro: -since inválido:", err)
@@ -70,6 +71,7 @@ func main() {
 			approveAll:    *approveAll,
 			rejectID:      *rejectID,
 			rejectAll:     *rejectAll,
+			requeueID:     *requeueID,
 			history:       *history,
 			historyStatus: *historyStatus,
 			historySince:  *historySince,
@@ -336,6 +338,7 @@ type managementArgs struct {
 	approveAll bool
 	rejectID   string
 	rejectAll  bool
+	requeueID  string
 
 	history       bool
 	historyStatus string
@@ -366,6 +369,8 @@ func runManagementCommand(a managementArgs, out io.Writer) int {
 		return cmdReject(eng, a.rejectID, out)
 	case a.rejectAll:
 		return cmdRejectAll(eng, out)
+	case a.requeueID != "":
+		return cmdRequeue(eng, a.requeueID, out)
 	case a.history:
 		return cmdHistory(eng, a.historyStatus, a.historySince, out)
 	}
@@ -443,6 +448,15 @@ func cmdReject(eng *core.Engine, id string, out io.Writer) int {
 		return 1
 	}
 	fmt.Fprintf(out, "job %s rejeitado (original preservado)\n", shortID(id))
+	return 0
+}
+
+func cmdRequeue(eng *core.Engine, id string, out io.Writer) int {
+	if err := eng.RequeueJob(id); err != nil {
+		fmt.Fprintln(os.Stderr, "erro ao reenfileirar job:", err)
+		return 1
+	}
+	fmt.Fprintf(out, "job %s reenfileirado com prioridade máxima\n", shortID(id))
 	return 0
 }
 

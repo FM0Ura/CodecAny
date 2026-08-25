@@ -90,6 +90,16 @@
   background: var(--surface-2);
   border: 1px solid var(--border-soft);
   border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.job-row:hover {
+  border-color: var(--border);
+}
+
+.job-row:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
 }
 
 .job-row__head {

@@ -108,12 +108,20 @@ type SizeMetrics struct {
 
 // Job representa um item da fila persistido no SQLite.
 type Job struct {
-	ID          string      `json:"id"`
-	Path        string      `json:"path"`
-	Status      JobStatus   `json:"status"`
-	Driver      string      `json:"driver"`
-	Target      TargetSpec  `json:"target"`
-	MediaInfo   MediaInfo   `json:"media_info"`
+	ID        string     `json:"id"`
+	Path      string     `json:"path"`
+	Status    JobStatus  `json:"status"`
+	Driver    string     `json:"driver"`
+	Target    TargetSpec `json:"target"`
+	MediaInfo MediaInfo  `json:"media_info"`
+
+	// OutputMediaInfo carrega os metadados medidos do arquivo GERADO pela
+	// conversão (probe feito após a verificação de integridade, antes do
+	// Commit/staging ser consumido — ver runJob em engine.go). nil para
+	// jobs que ainda não passaram por essa etapa (QUEUED/IN_PROGRESS/
+	// FAILED/ROLLED_BACK) ou cujo probe falhou.
+	OutputMediaInfo *MediaInfo `json:"output_media_info,omitempty"`
+
 	Priority    int         `json:"priority"`
 	CreatedAt   time.Time   `json:"created_at"`
 	StartedAt   *time.Time  `json:"started_at,omitempty"`

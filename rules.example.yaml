@@ -60,7 +60,29 @@ global:
 # Regras (ordem importa: específica primeiro)
 # ----------------------------------------------------------
 rules:
-  # 1) H.264/MJPEG em MKV → AV1
+  # 1) H.264 Remux em MKV → AV1 (fonte de alta taxa de bits, sem geração de
+  # perda anterior — ex.: extração direta de mídia óptica/master. Vale
+  # preservar mais qualidade que um H.264 já codificado, daí o CRF mais baixo).
+  - name: "MKV H264 Remux para AV1"
+    match:
+      container: mkv
+      video:
+        codec: h264
+        min_bitrate_kbps: 15000 # abaixo disso não é considerado remux (ver H264/MJPEG abaixo)
+      audio:
+        codec: [aac, ac3]    # não impeditivo: áudio divergente não bloqueia
+    convert:
+      video:
+        codec: av1
+        crf: 28
+        preset: 5
+      audio:
+        codec: flac          # converte lossless pesados para FLAC, copia formatos leves
+      container: mkv
+
+  # 2) H.264/MJPEG em MKV → AV1 (fallback: H.264 já codificado — abaixo do
+  # limiar de bitrate da regra de remux acima — ou MJPEG. Fonte já perdeu
+  # detalhe numa geração anterior, então CRF mais agressivo compensa mais).
   - name: "MKV H264/MJPEG para AV1"
     match:
       container: mkv
@@ -71,19 +93,36 @@ rules:
     convert:
       video:
         codec: av1
+        crf: 30
         preset: 5
       audio:
         codec: flac          # converte lossless pesados para FLAC, copia formatos leves
       container: mkv
 
-  # 2) Vídeo AV1 → nunca converter
+  # 3) Vídeo AV1 → nunca converter
   - name: "Não mexer em AV1"
     match:
       video:
         codec: av1
     action: skip
 
-  # 3) Fallback genérico: qualquer MP4 H.264/MJPEG → AV1
+  # 4) H.264 Remux em MP4 → AV1 (mesma lógica da regra MKV equivalente acima)
+  - name: "MP4 H264 Remux para AV1"
+    match:
+      container: mp4
+      video:
+        codec: h264
+        min_bitrate_kbps: 15000
+    convert:
+      video:
+        codec: av1
+        crf: 28
+        preset: 5
+      audio:
+        codec: flac          # converte lossless pesados para FLAC, copia formatos leves
+      container: mkv         # MKV é melhor para preservar legendas e metadados sem perdas
+
+  # 5) Fallback genérico: qualquer MP4 H.264/MJPEG já codificado → AV1
   - name: "MP4 H264/MJPEG para AV1"
     match:
       container: mp4
@@ -92,6 +131,7 @@ rules:
     convert:
       video:
         codec: av1
+        crf: 30
         preset: 5
       audio:
         codec: flac          # converte lossless pesados para FLAC, copia formatos leves

@@ -503,6 +503,23 @@ loop:
 		return
 	}
 
+	// Probe do arquivo GERADO (metadados reais medidos, não o TargetSpec
+	// configurado): precisa acontecer AQUI, com o output ainda em
+	// cl.Output() — depois do Commit() (auto_approve) o arquivo já foi
+	// renomeado para FinalPath()/job.Path, e no caminho de aprovação manual
+	// ele fica em staging até ApproveJob/RejectJob decidir. Falha aqui é só
+	// logada (não falha o job): a conversão já passou pela verificação de
+	// decodificação, então o arquivo é válido — metadados ausentes só
+	// degradam a exibição no painel, não a segurança do pipeline.
+	if omi, perr := e.prober.Probe(cl.Output()); perr == nil {
+		if err := e.store.UpdateOutputMediaInfo(job.ID, omi); err != nil {
+			e.log.Error("falha ao persistir metadados do arquivo gerado", "job_id", job.ID, "error", err.Error())
+		}
+		job.OutputMediaInfo = &omi
+	} else {
+		e.log.Error("falha ao inspecionar arquivo gerado", "job_id", job.ID, "error", perr.Error())
+	}
+
 	if !job.Target.AutoApprove {
 		// Pausa para aprovação manual: NÃO chama cl.Commit()/cl.Abort() — o
 		// output convertido permanece em staging, o worker apenas retorna
@@ -635,6 +652,24 @@ func (e *Engine) RejectJob(id string) error {
 	e.log.Info("job rejeitado pelo usuário", "job_id", job.ID, "path", job.Path)
 	e.emit(JobEvent{Kind: EventJobComplete, JobID: job.ID, FilePath: job.Path, Driver: job.Driver,
 		Success: false, SizeDiff: job.SizeMetrics.SavedBytes, Metrics: &job.SizeMetrics, TargetCodec: job.Target.VideoCodec})
+	return nil
+}
+
+// RequeueJob reenfileira manualmente um Job em StatusFailed/StatusRolledBack,
+// atribuindo a maior prioridade atual +1 — garante que seja o PRÓXIMO job
+// reivindicado por NextPendingJob assim que o(s) worker(s) em andamento
+// terminarem (workerLoop só chama NextPendingJob de novo após runJob
+// retornar — nenhuma mudança de concorrência necessária aqui). A mutação
+// atômica e a guarda de status vivem em Store.RequeueJob (ver comentário lá
+// sobre por que um UPDATE condicional único é usado em vez do padrão
+// fetch-then-update de ApproveJob/RejectJob).
+func (e *Engine) RequeueJob(id string) error {
+	job, err := e.store.RequeueJob(id)
+	if err != nil {
+		return err
+	}
+	e.log.Info("job reenfileirado manualmente", "job_id", job.ID, "path", job.Path, "priority", job.Priority)
+	e.emit(JobEvent{Kind: EventJobRequeued, JobID: job.ID, FilePath: job.Path, Driver: job.Driver, Success: true})
 	return nil
 }
 

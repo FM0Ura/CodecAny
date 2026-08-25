@@ -380,6 +380,45 @@ func TestEngineAwaitsApprovalWhenAutoApproveFalse(t *testing.T) {
 	}
 }
 
+// TestEngineProbesOutputMediaInfo garante que Job.OutputMediaInfo (metadados
+// medidos do arquivo GERADO, distinto do TargetSpec configurado) é
+// preenchido e persistido no caminho de aprovação manual — o probe roda
+// antes do job pausar em AWAITING_APPROVAL, com o output ainda em staging.
+func TestEngineProbesOutputMediaInfo(t *testing.T) {
+	base := t.TempDir()
+	eng, events, mediaPath, _, _, _ := setupEngineAwaitingApproval(t, base, 1000, 500)
+	runToCompletion(t, eng, events, mediaPath)
+
+	job, err := eng.store.FindByPath(mediaPath)
+	if err != nil || job == nil {
+		t.Fatalf("esperava job persistido: %v", err)
+	}
+	if job.OutputMediaInfo == nil {
+		t.Fatal("esperava OutputMediaInfo preenchido em AWAITING_APPROVAL")
+	}
+	if job.OutputMediaInfo.Container != "mkv" || job.OutputMediaInfo.VideoCodec != "h264" {
+		t.Errorf("OutputMediaInfo inesperado: %+v", job.OutputMediaInfo)
+	}
+}
+
+// TestEngineProbesOutputMediaInfoAutoApprove cobre o mesmo cenário no
+// caminho de auto-aprovação, onde o Commit (que renomeia o output em
+// staging para o path final) acontece dentro do próprio runJob — o probe
+// precisa ter rodado ANTES disso para não mirar num arquivo que já não
+// existe mais naquele caminho.
+func TestEngineProbesOutputMediaInfoAutoApprove(t *testing.T) {
+	eng, events, mediaPath, _ := setupEngine(t, 1000, 500)
+	runToCompletion(t, eng, events, mediaPath)
+
+	job, err := eng.store.FindByPath(mediaPath)
+	if err != nil || job == nil {
+		t.Fatalf("esperava job persistido: %v", err)
+	}
+	if job.OutputMediaInfo == nil {
+		t.Fatal("esperava OutputMediaInfo preenchido em COMPLETED (auto_approve)")
+	}
+}
+
 // TestEngineApproveJobCommits confirma que ApproveJob comita o output em
 // staging no lugar do original e marca COMPLETED.
 func TestEngineApproveJobCommits(t *testing.T) {
@@ -511,6 +550,187 @@ func TestEngineApproveJobFromFreshEngineInstance(t *testing.T) {
 	}
 	if got.Status != StatusCompleted {
 		t.Errorf("status esperado COMPLETED, obteve %v", got.Status)
+	}
+}
+
+// TestEngineRequeueJobMarksQueued confirma o caminho feliz: um job FAILED
+// volta a QUEUED e emite EventJobRequeued.
+func TestEngineRequeueJobMarksQueued(t *testing.T) {
+	eng, events, _, _ := setupEngine(t, 1000, 500)
+
+	job := &Job{ID: "job-failed", Path: "x.mkv", Status: StatusQueued, Driver: "ffmpeg", CreatedAt: time.Now()}
+	if err := eng.store.CreateJob(job); err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.store.UpdateStatus(job.ID, StatusFailed, nil, nil, "boom"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := eng.RequeueJob(job.ID); err != nil {
+		t.Fatalf("RequeueJob falhou: %v", err)
+	}
+
+	got, err := eng.store.FindByID(job.ID)
+	if err != nil || got == nil {
+		t.Fatalf("job deveria continuar no store: %v", err)
+	}
+	if got.Status != StatusQueued {
+		t.Errorf("status esperado QUEUED, obteve %v", got.Status)
+	}
+
+	select {
+	case ev := <-events:
+		if ev.Kind != EventJobRequeued {
+			t.Errorf("kind esperado EventJobRequeued, obteve %v", ev.Kind)
+		}
+		if ev.JobID != job.ID {
+			t.Errorf("job_id esperado %s, obteve %s", job.ID, ev.JobID)
+		}
+	default:
+		t.Fatal("esperava EventJobRequeued no canal de eventos")
+	}
+}
+
+// TestEngineRequeueJobWrongStatusErrors confirma que jobs fora de
+// FAILED/ROLLED_BACK não podem ser reenfileirados.
+func TestEngineRequeueJobWrongStatusErrors(t *testing.T) {
+	eng, events, _, _ := setupEngine(t, 1000, 500)
+
+	job := &Job{ID: "job-in-progress", Path: "x.mkv", Status: StatusQueued, Driver: "ffmpeg", CreatedAt: time.Now()}
+	if err := eng.store.CreateJob(job); err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.store.UpdateStatus(job.ID, StatusInProgress, nil, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := eng.RequeueJob(job.ID); err == nil {
+		t.Fatal("esperava erro ao reenfileirar job IN_PROGRESS")
+	}
+
+	select {
+	case ev := <-events:
+		t.Fatalf("não esperava evento algum, obteve %+v", ev)
+	default:
+	}
+}
+
+// TestEngineRequeueJobGoesToTopOfQueue prova a promessa central da feature:
+// um job FAILED reenfileirado vira o PRÓXIMO a ser reivindicado por
+// NextPendingJob, à frente de jobs QUEUED já existentes na fila.
+func TestEngineRequeueJobGoesToTopOfQueue(t *testing.T) {
+	base := t.TempDir()
+	stage := filepath.Join(base, "staging")
+	rulesPath := writeRules(t, "version: 1\nglobal:\n  default_driver: mock\n  staging_dir: "+stage+"\n  space_saving:\n    min_saving_pct: 15\n  defaults:\n    video: { codec: hevc }\n    auto_approve: true\nrules:\n  - name: r\n    convert:\n      video: { codec: hevc }\n")
+
+	store, err := NewStore(filepath.Join(base, "codecany.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	re, err := NewRulesEngine(rulesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng, err := NewEngine(EngineDeps{
+		Store:   store,
+		Rules:   re,
+		Prober:  mockProber{info: MediaInfo{Container: "mkv", VideoCodec: "h264"}},
+		Engines: []TranscoderEngine{&mockTranscoder{outputSize: 500}},
+		Workers: 1,
+		Logger:  slog.New(slog.NewTextHandler(os.Stderr, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Duas filas normais + um job que vamos forçar para FAILED.
+	pathA := filepath.Join(base, "a.mkv")
+	pathB := filepath.Join(base, "b.mkv")
+	pathFail := filepath.Join(base, "f.mkv")
+	writeFileSize(t, pathA, 1000)
+	writeFileSize(t, pathB, 1000)
+	writeFileSize(t, pathFail, 1000)
+	eng.HandleDiscovered(pathA)
+	eng.HandleDiscovered(pathB)
+	eng.HandleDiscovered(pathFail)
+
+	failedJob, err := eng.store.FindByPath(pathFail)
+	if err != nil || failedJob == nil {
+		t.Fatalf("esperava job para %s: %v", pathFail, err)
+	}
+	if err := eng.store.UpdateStatus(failedJob.ID, StatusFailed, nil, nil, "boom"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := eng.RequeueJob(failedJob.ID); err != nil {
+		t.Fatalf("RequeueJob falhou: %v", err)
+	}
+
+	next, err := eng.store.NextPendingJob()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next == nil || next.ID != failedJob.ID {
+		t.Fatalf("esperava que o job reenfileirado (%s) fosse o próximo reivindicado, obteve %#v", failedJob.ID, next)
+	}
+}
+
+// TestEngineRequeueJobFromFreshEngineInstance prova que RequeueJob funciona
+// a partir de uma SEGUNDA instância de Engine sobre o mesmo .db — o cenário
+// real de `-requeue <id>` rodando num processo CLI novo, separado do que
+// criou/rodou o job originalmente (mesmo raciocínio de
+// TestEngineApproveJobFromFreshEngineInstance).
+func TestEngineRequeueJobFromFreshEngineInstance(t *testing.T) {
+	base := t.TempDir()
+	dbPath := filepath.Join(base, "codecany.db")
+	rulesPath := writeRules(t, "version: 1\nglobal:\n  default_driver: mock\n  staging_dir: "+filepath.Join(base, "staging")+"\n  space_saving:\n    min_saving_pct: 15\n  defaults:\n    video: { codec: hevc }\n    auto_approve: true\nrules:\n  - name: r\n    convert:\n      video: { codec: hevc }\n")
+
+	store1, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := &Job{ID: "job-fresh", Path: "x.mkv", Status: StatusQueued, Driver: "ffmpeg", CreatedAt: time.Now()}
+	if err := store1.CreateJob(job); err != nil {
+		t.Fatal(err)
+	}
+	if err := store1.UpdateStatus(job.ID, StatusRolledBack, nil, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	store1.Close() // simula fim do processo CLI que criou/rodou o job
+
+	// Segunda instância "processo novo": abre o MESMO .db do zero.
+	store2, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store2.Close() })
+	re2, err := NewRulesEngine(rulesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng2, err := NewEngine(EngineDeps{
+		Store:   store2,
+		Rules:   re2,
+		Prober:  mockProber{info: MediaInfo{Container: "mkv", VideoCodec: "h264"}},
+		Engines: []TranscoderEngine{&mockTranscoder{outputSize: 500}},
+		Workers: 1,
+		Logger:  slog.New(slog.NewTextHandler(os.Stderr, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := eng2.RequeueJob(job.ID); err != nil {
+		t.Fatalf("RequeueJob (segunda instância) falhou: %v", err)
+	}
+
+	got, err := store2.FindByID(job.ID)
+	if err != nil || got == nil {
+		t.Fatalf("job deveria continuar no store: %v", err)
+	}
+	if got.Status != StatusQueued {
+		t.Errorf("status esperado QUEUED, obteve %v", got.Status)
 	}
 }
 

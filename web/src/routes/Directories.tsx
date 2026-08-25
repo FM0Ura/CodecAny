@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { ApiError, addDir, browseFs, getDirs, removeDir, rescanDirs } from "../api/client";
 import type { FsBrowseResult } from "../api/types";
 import { Panel } from "../components/Panel";
@@ -130,26 +130,48 @@ interface DirBrowserModalProps {
   onSelected: () => void;
 }
 
+/** Quebra um caminho absoluto em segmentos clicáveis de breadcrumb — ex.:
+ * "/srv/media/anime" vira [{label:"/",path:"/"}, {label:"srv",path:"/srv"},
+ * {label:"media",path:"/srv/media"}, {label:"anime",path:"/srv/media/anime"}].
+ * O último segmento é sempre a localização atual (não-clicável). */
+function pathSegments(path: string): { label: string; path: string }[] {
+  const parts = path.split("/").filter(Boolean);
+  const segments = [{ label: "/", path: "/" }];
+  let acc = "";
+  for (const part of parts) {
+    acc += "/" + part;
+    segments.push({ label: part, path: acc });
+  }
+  return segments;
+}
+
 /**
  * Modal navegador de diretórios (decisão de produto: preferido a um campo
  * de texto puro para adicionar diretórios monitorados — ver
- * docs/propostas_painel_controle.md, item "Diretórios Monitorados").
- * Consome GET /api/fs/browse para listar subpastas navegáveis.
+ * docs/propostas_painel_controle.md, item "Diretórios Monitorados"). O
+ * atalho "Ir para" abaixo não contorna essa decisão: ele só chama o mesmo
+ * GET /api/fs/browse (validado/confirmado pelo servidor) que um clique
+ * numa subpasta chamaria — só evita ter que descer nível a nível quando o
+ * caminho já é conhecido. Consome GET /api/fs/browse para listar subpastas
+ * navegáveis.
  */
 function DirBrowserModal({ onClose, onSelected }: DirBrowserModalProps) {
   const [result, setResult] = useState<FsBrowseResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [gotoPath, setGotoPath] = useState("");
 
-  const load = useCallback(async (path: string) => {
+  const load = useCallback(async (path: string): Promise<boolean> => {
     setLoading(true);
     try {
       const data = await browseFs(path);
       setResult(data);
       setError(null);
+      return true;
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Falha ao navegar no filesystem.");
+      return false;
     } finally {
       setLoading(false);
     }
@@ -158,6 +180,21 @@ function DirBrowserModal({ onClose, onSelected }: DirBrowserModalProps) {
   useEffect(() => {
     load("");
   }, [load]);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
+  async function handleGoto(e: FormEvent) {
+    e.preventDefault();
+    const target = gotoPath.trim();
+    if (!target) return;
+    if (await load(target)) setGotoPath("");
+  }
 
   async function handleSelect() {
     if (!result) return;
@@ -188,7 +225,39 @@ function DirBrowserModal({ onClose, onSelected }: DirBrowserModalProps) {
           </button>
         </div>
 
-        <div className="dir-modal__path numeric">{result?.path ?? "/"}</div>
+        <nav className="dir-modal__breadcrumbs numeric" aria-label="Caminho atual">
+          {pathSegments(result?.path ?? "/").map((seg, i, arr) => {
+            const isLast = i === arr.length - 1;
+            return (
+              <span key={seg.path}>
+                {i > 0 ? <span className="dir-modal__crumb-sep">›</span> : null}
+                <button
+                  type="button"
+                  className={`dir-modal__crumb${isLast ? " dir-modal__crumb--current" : ""}`}
+                  onClick={() => load(seg.path)}
+                  disabled={isLast || loading}
+                >
+                  {seg.label}
+                </button>
+              </span>
+            );
+          })}
+        </nav>
+
+        <form className="dir-modal__goto" onSubmit={handleGoto}>
+          <input
+            type="text"
+            className="dir-modal__goto-input"
+            placeholder="Ir para um caminho específico…"
+            value={gotoPath}
+            onChange={(e) => setGotoPath(e.target.value)}
+            disabled={loading}
+            aria-label="Ir para um caminho específico"
+          />
+          <button type="submit" className="btn btn--ghost" disabled={loading || !gotoPath.trim()}>
+            Ir
+          </button>
+        </form>
 
         {error ? (
           <div className="dir-modal__error" role="alert">
@@ -196,21 +265,22 @@ function DirBrowserModal({ onClose, onSelected }: DirBrowserModalProps) {
           </div>
         ) : null}
 
-        <div className="dir-modal__list">
-          {loading ? (
-            <span className="directories__empty-note">Carregando…</span>
-          ) : result && result.entries.length > 0 ? (
+        <div className="dir-modal__list" aria-busy={loading}>
+          {result && result.entries.length > 0 ? (
             result.entries.map((entry) => (
               <button
                 type="button"
                 key={entry.path}
                 className="dir-modal__entry"
                 onClick={() => load(entry.path)}
+                disabled={loading}
               >
                 <IconFolder width={16} height={16} />
                 <span className="dir-modal__entry-name">{entry.name}</span>
               </button>
             ))
+          ) : loading ? (
+            <span className="directories__empty-note">Carregando…</span>
           ) : (
             <span className="directories__empty-note">Nenhuma subpasta aqui.</span>
           )}

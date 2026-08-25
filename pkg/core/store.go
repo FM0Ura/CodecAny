@@ -53,6 +53,18 @@ func NewStore(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("criar schema: %w", err)
 	}
+	// Migração idempotente: CREATE TABLE IF NOT EXISTS não altera uma tabela
+	// já criada por uma versão anterior do binário, então bancos existentes
+	// (sem esta coluna) precisam do ALTER explícito. O erro é ignorado
+	// quando a coluna já existe (schema novo criado pelo Exec acima já a
+	// inclui) — SQLite não suporta ADD COLUMN IF NOT EXISTS nas versões mais
+	// antigas ainda em uso, então checamos a mensagem de erro.
+	if _, err := db.Exec(`ALTER TABLE jobs ADD COLUMN output_media_info TEXT`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, fmt.Errorf("migrar coluna output_media_info: %w", err)
+		}
+	}
 	return &Store{db: db}, nil
 }
 
@@ -64,6 +76,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     driver      TEXT NOT NULL,
     target      TEXT NOT NULL,
     media_info  TEXT NOT NULL,
+    output_media_info TEXT,
     priority    INTEGER DEFAULT 0,
     original_size INTEGER DEFAULT 0,
     converted_size INTEGER DEFAULT 0,
@@ -90,7 +103,8 @@ CREATE TABLE IF NOT EXISTS watched_dirs (
 // colunas persistidas (started_at/finished_at/métricas/error), não só as
 // usadas pelo caminho de execução original (NextPendingJob etc.).
 const jobColumns = `id, path, status, driver, target, media_info, priority, created_at,
-	started_at, finished_at, original_size, converted_size, saved_bytes, ratio_pct, error`
+	started_at, finished_at, original_size, converted_size, saved_bytes, ratio_pct, error,
+	output_media_info`
 
 // Close encerra a conexão com o banco.
 func (s *Store) Close() error { return s.db.Close() }
@@ -157,6 +171,18 @@ func (s *Store) UpdateMetrics(id string, m SizeMetrics) error {
 		`UPDATE jobs SET original_size=?, converted_size=?, saved_bytes=?, ratio_pct=? WHERE id=?`,
 		m.OriginalSizeBytes, m.ConvertedSizeBytes, m.SavedBytes, m.CompressionRatioPct, id,
 	)
+	return err
+}
+
+// UpdateOutputMediaInfo persiste os metadados medidos do arquivo gerado
+// pela conversão (probe feito uma vez, logo após a verificação de
+// integridade — ver runJob em engine.go).
+func (s *Store) UpdateOutputMediaInfo(id string, mi MediaInfo) error {
+	raw, err := json.Marshal(mi)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`UPDATE jobs SET output_media_info=? WHERE id=?`, string(raw), id)
 	return err
 }
 
@@ -305,6 +331,50 @@ func (s *Store) NextPendingJob() (*Job, error) {
 		// de novo (não é erro, é a corrida esperada em -workers>1).
 	}
 	return nil, fmt.Errorf("NextPendingJob: %d tentativas de reivindicação sem sucesso", maxClaimRetries)
+}
+
+// RequeueJob reenfileira manualmente um Job em StatusFailed/StatusRolledBack:
+// volta a StatusQueued com a maior prioridade já vista (MAX(priority)+1 entre
+// TODOS os jobs, não só os QUEUED — sempre igual ou maior que o necessário
+// para vencer o desempate em NextPendingJob, então serve mesmo sem filtrar
+// por status), limpando started_at/finished_at/error para o job voltar a um
+// estado "fresco" de fila. A checagem de status + mutação são um único
+// UPDATE condicional (WHERE ... status IN (?, ?)), não fetch-then-update
+// (como ApproveJob/RejectJob em engine.go): diferente de um job
+// AWAITING_APPROVAL (inerte), um FAILED/ROLLED_BACK pode em tese ser
+// concorrentemente tocado por outro caminho (ex.: reenfileirado duas vezes
+// ao mesmo tempo, uma da UI e outra da CLI); o UPDATE atômico evita a janela
+// de corrida que um SELECT separado teria. UpdateStatus não serve aqui:
+// seu COALESCE(?, started_at) só SETA campos quando o valor novo não é nil,
+// nunca os LIMPA de volta a NULL/"".
+func (s *Store) RequeueJob(id string) (*Job, error) {
+	res, err := s.db.Exec(
+		`UPDATE jobs SET status=?, priority=(SELECT COALESCE(MAX(priority),0)+1 FROM jobs),
+		 started_at=NULL, finished_at=NULL, error=''
+		 WHERE id=? AND status IN (?, ?)`,
+		StatusQueued, id, StatusFailed, StatusRolledBack,
+	)
+	if err != nil {
+		return nil, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if n == 0 {
+		// UPDATE não afetou nada — busca só para diferenciar a mensagem de
+		// erro (não encontrado vs. status errado), fora da decisão atômica
+		// acima, então não reabre janela de corrida nenhuma.
+		existing, ferr := s.FindByID(id)
+		if ferr != nil {
+			return nil, ferr
+		}
+		if existing == nil {
+			return nil, fmt.Errorf("job não encontrado: %s", id)
+		}
+		return nil, fmt.Errorf("job %s não está FAILED nem ROLLED_BACK (status atual: %s)", id, existing.Status)
+	}
+	return s.FindByID(id)
 }
 
 // ClaimPendingMarks marca todos os Jobs QUEUED como IN_PROGRESS para orquestração.
@@ -460,9 +530,10 @@ func scanJob(row rowScanner) (*Job, error) {
 		origSize, convSize sql.NullInt64
 		savedBytes         sql.NullInt64
 		ratioPct           sql.NullFloat64
+		outputMiRaw        sql.NullString
 	)
 	err := row.Scan(&j.ID, &j.Path, &j.Status, &j.Driver, &targetRaw, &miRaw, &j.Priority, &createdRaw,
-		&startedRaw, &finRaw, &origSize, &convSize, &savedBytes, &ratioPct, &errMsg)
+		&startedRaw, &finRaw, &origSize, &convSize, &savedBytes, &ratioPct, &errMsg, &outputMiRaw)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
@@ -482,6 +553,12 @@ func scanJob(row rowScanner) (*Job, error) {
 	}
 	if errMsg.Valid {
 		j.Error = errMsg.String
+	}
+	if outputMiRaw.Valid && outputMiRaw.String != "" {
+		var omi MediaInfo
+		if err := json.Unmarshal([]byte(outputMiRaw.String), &omi); err == nil {
+			j.OutputMediaInfo = &omi
+		}
 	}
 	j.SizeMetrics = SizeMetrics{
 		OriginalSizeBytes:   origSize.Int64,

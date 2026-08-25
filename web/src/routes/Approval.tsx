@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ApiError, approveAll, approveJob, getStaging, rejectAll, rejectJob } from "../api/client";
 import type { Job } from "../api/types";
 import { Panel } from "../components/Panel";
+import { JobMetadataDialog } from "../components/JobMetadataDialog";
 import { basename, formatBytes, formatPct } from "../lib/format";
 import "./Approval.css";
 
@@ -22,6 +23,7 @@ export function Approval() {
   const [confirmKind, setConfirmKind] = useState<BulkKind | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkResult, setBulkResult] = useState<BulkResult | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -55,6 +57,7 @@ export function Approval() {
     try {
       await approveJob(id);
       setJobs((prev) => prev.filter((j) => j.id !== id));
+      setSelectedId((prev) => (prev === id ? null : prev));
       load();
     } catch (err) {
       const msg = err instanceof ApiError ? err.message : "Falha ao aprovar o job.";
@@ -70,6 +73,7 @@ export function Approval() {
     try {
       await rejectJob(id);
       setJobs((prev) => prev.filter((j) => j.id !== id));
+      setSelectedId((prev) => (prev === id ? null : prev));
       load();
     } catch (err) {
       const msg = err instanceof ApiError ? err.message : "Falha ao rejeitar o job.";
@@ -98,6 +102,8 @@ export function Approval() {
       setConfirmKind(null);
     }
   }
+
+  const selectedJob = jobs.find((j) => j.id === selectedId) ?? null;
 
   return (
     <div className="approval">
@@ -174,7 +180,17 @@ export function Approval() {
                   const busy = busyIds.has(job.id);
                   const rowErr = rowError[job.id];
                   return (
-                    <tr key={job.id}>
+                    <tr
+                      key={job.id}
+                      className="approval-table__row"
+                      onClick={() => setSelectedId(job.id)}
+                      tabIndex={0}
+                      role="button"
+                      aria-label={`Ver detalhes de ${basename(job.path)}`}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") setSelectedId(job.id);
+                      }}
+                    >
                       <td className="font-mono approval-table__path" title={job.path}>
                         {basename(job.path)}
                       </td>
@@ -191,7 +207,10 @@ export function Approval() {
                             type="button"
                             className="approval__row-btn approval__row-btn--approve"
                             disabled={busy}
-                            onClick={() => handleApprove(job.id)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleApprove(job.id);
+                            }}
                           >
                             Aprovar
                           </button>
@@ -199,7 +218,10 @@ export function Approval() {
                             type="button"
                             className="approval__row-btn approval__row-btn--reject"
                             disabled={busy}
-                            onClick={() => handleReject(job.id)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleReject(job.id);
+                            }}
                           >
                             Rejeitar
                           </button>
@@ -222,6 +244,17 @@ export function Approval() {
           busy={bulkBusy}
           onCancel={() => setConfirmKind(null)}
           onConfirm={confirmBulk}
+        />
+      ) : null}
+
+      {selectedJob ? (
+        <JobMetadataDialog
+          job={selectedJob}
+          onClose={() => setSelectedId(null)}
+          onApprove={() => handleApprove(selectedJob.id)}
+          onReject={() => handleReject(selectedJob.id)}
+          busy={busyIds.has(selectedJob.id)}
+          actionError={rowError[selectedJob.id]}
         />
       ) : null}
     </div>

@@ -57,6 +57,11 @@ export interface Job {
   driver: string;
   target: TargetSpec;
   media_info: MediaInfo;
+  /** Metadados medidos do arquivo GERADO pela conversão (não o TargetSpec
+   * configurado) — preenchido só após a verificação de integridade passar;
+   * ausente/null para jobs ainda não convertidos, revertidos, ou anteriores
+   * a esta feature. */
+  output_media_info?: MediaInfo | null;
   priority: number;
   created_at: string; // RFC3339
   started_at?: string;
@@ -70,7 +75,8 @@ export type JobEventKind =
   | "OnJobProgress"
   | "OnJobComplete"
   | "OnJobError"
-  | "OnJobAwaitingApproval";
+  | "OnJobAwaitingApproval"
+  | "OnJobRequeued";
 
 export interface JobEvent {
   kind: JobEventKind;

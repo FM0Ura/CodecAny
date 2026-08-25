@@ -129,6 +129,19 @@
   vertical-align: middle;
 }
 
+.approval-table__row {
+  cursor: pointer;
+}
+
+.approval-table__row:hover {
+  background: var(--surface-2);
+}
+
+.approval-table__row:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
 .approval-table__path {
   max-width: 320px;
   overflow: hidden;
@@ -173,6 +186,18 @@
 
 .approval__row-btn--reject:hover:not(:disabled) {
   background: var(--danger-fill);
+}
+
+/* Usado pelo botão "Reenfileirar" em JobMetadataDialog (Fila, jobs
+   FAILED/ROLLED_BACK) — mesmos tokens de .chip--queued (Chip.css), já que a
+   ação devolve o job ao estado QUEUED. */
+.approval__row-btn--requeue {
+  color: var(--info);
+  border-color: var(--info-border);
+}
+
+.approval__row-btn--requeue:hover:not(:disabled) {
+  background: var(--info-fill);
 }
 
 .approval-table__row-error {

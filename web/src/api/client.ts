@@ -110,6 +110,11 @@ export function getJob(id: string): Promise<Job> {
   return getJSON<Job>(`/api/jobs/${encodeURIComponent(id)}`);
 }
 
+/** POST /api/jobs/{id}/requeue — reenfileira um job FAILED/ROLLED_BACK com prioridade máxima; 404 se não existir/não estiver nesses status. */
+export function requeueJob(id: string): Promise<OkResponse> {
+  return postJSON<OkResponse>(`/api/jobs/${encodeURIComponent(id)}/requeue`);
+}
+
 export interface HealthCheckRequest {
   dirs?: string[];
   files?: string[];
@@ -132,6 +137,7 @@ const EVENT_KINDS: JobEvent["kind"][] = [
   "OnJobComplete",
   "OnJobError",
   "OnJobAwaitingApproval",
+  "OnJobRequeued",
 ];
 
 /**

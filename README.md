@@ -132,7 +132,7 @@ O binário é estático e não exige dependências de runtime além dos binário
 Veja o exemplo completo em [`rules.example.yaml`](rules.example.yaml). Resumo:
 
 - **First-match wins** — a primeira regra que casar vence; regras específicas devem vir antes das genéricas.
-- **`match`** por igualdade escalar (`codec: h264`) ou lista OR (`codec: [aac, ac3]`), além de `video.min_height`/`max_height`/`min_bitrate_kbps` para regras por resolução/bitrate.
+- **`match`** por igualdade escalar (`codec: h264`) ou lista OR (`codec: [aac, ac3]`), além de `video.min_height`/`max_height`/`min_bitrate_kbps` para regras por resolução/bitrate — `min_bitrate_kbps` também serve para diferenciar H.264 Remux (alta taxa de bits, sem geração de perda anterior) de H.264 já codificado, cada um com seu próprio `crf` (ver `rules.example.yaml`).
 - **Áudio não é impeditivo** — codecs de áudio divergentes não bloqueiam a conversão de vídeo; o `convert.audio` define a saída (habitualmente `copy`, sem perda).
 - **`action: skip`** define regras de "não converter"; `convert.video.codec: copy` define remux-only (troca só o container).
 - **`convert.video.max_height`** aplica downscale opcional (`-vf scale`) quando a altura de origem for maior.

@@ -3,6 +3,7 @@ package core
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -477,5 +478,163 @@ func TestStoreWatchedDirsCRUD(t *testing.T) {
 	// Remover um path que não existe não é erro.
 	if err := store.RemoveWatchedDir("/media/nao-existe"); err != nil {
 		t.Fatalf("RemoveWatchedDir de path inexistente não deveria falhar: %v", err)
+	}
+}
+
+func TestStoreRequeueJobFromFailed(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	job := &Job{ID: "job-failed", Path: "a.mkv", Status: StatusQueued, Driver: "ffmpeg", CreatedAt: time.Now()}
+	if err := store.CreateJob(job); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	finished := started.Add(time.Second)
+	if err := store.UpdateStatus(job.ID, StatusFailed, &started, &finished, "erro de transcode"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.RequeueJob(job.ID)
+	if err != nil {
+		t.Fatalf("RequeueJob falhou: %v", err)
+	}
+	if got.Status != StatusQueued {
+		t.Errorf("status esperado %v, obteve %v", StatusQueued, got.Status)
+	}
+	if got.StartedAt != nil {
+		t.Errorf("started_at deveria ter sido limpo, obteve %v", got.StartedAt)
+	}
+	if got.FinishedAt != nil {
+		t.Errorf("finished_at deveria ter sido limpo, obteve %v", got.FinishedAt)
+	}
+	if got.Error != "" {
+		t.Errorf("error deveria ter sido limpo, obteve %q", got.Error)
+	}
+	if got.Priority <= 0 {
+		t.Errorf("priority esperada > 0 após reenfileiramento, obteve %d", got.Priority)
+	}
+}
+
+func TestStoreRequeueJobFromRolledBack(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	job := &Job{ID: "job-rb", Path: "b.mkv", Status: StatusQueued, Driver: "ffmpeg", CreatedAt: time.Now()}
+	if err := store.CreateJob(job); err != nil {
+		t.Fatal(err)
+	}
+	fin := time.Now()
+	if err := store.UpdateStatus(job.ID, StatusRolledBack, nil, &fin, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.RequeueJob(job.ID)
+	if err != nil {
+		t.Fatalf("RequeueJob falhou: %v", err)
+	}
+	if got.Status != StatusQueued {
+		t.Errorf("status esperado %v, obteve %v", StatusQueued, got.Status)
+	}
+	if got.FinishedAt != nil {
+		t.Errorf("finished_at deveria ter sido limpo, obteve %v", got.FinishedAt)
+	}
+}
+
+func TestStoreRequeueJobWrongStatusErrors(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	for _, status := range []JobStatus{StatusQueued, StatusInProgress, StatusCompleted, StatusAwaitingApproval} {
+		job := &Job{ID: "job-" + string(status), Path: string(status) + ".mkv", Status: StatusQueued, Driver: "ffmpeg", CreatedAt: time.Now()}
+		if err := store.CreateJob(job); err != nil {
+			t.Fatal(err)
+		}
+		if status != StatusQueued {
+			if err := store.UpdateStatus(job.ID, status, nil, nil, ""); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		if _, err := store.RequeueJob(job.ID); err == nil {
+			t.Errorf("esperava erro ao reenfileirar job em status %v", status)
+		}
+
+		reloaded, err := store.FindByID(job.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reloaded.Status != status {
+			t.Errorf("status não deveria ter mudado: esperava %v, obteve %v", status, reloaded.Status)
+		}
+	}
+}
+
+func TestStoreRequeueJobNotFoundErrors(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	_, err = store.RequeueJob("id-inexistente")
+	if err == nil {
+		t.Fatal("esperava erro ao reenfileirar ID inexistente")
+	}
+	if !strings.Contains(err.Error(), "não encontrado") {
+		t.Errorf("mensagem de erro deveria mencionar \"não encontrado\", obteve: %v", err)
+	}
+}
+
+func TestStoreRequeueJobGetsTopPriority(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	base := time.Now()
+	queuedA := &Job{ID: "queued-a", Path: "qa.mkv", Status: StatusQueued, Driver: "ffmpeg", CreatedAt: base}
+	queuedB := &Job{ID: "queued-b", Path: "qb.mkv", Status: StatusQueued, Driver: "ffmpeg", CreatedAt: base.Add(time.Second)}
+	failed := &Job{ID: "job-failed-top", Path: "f.mkv", Status: StatusQueued, Driver: "ffmpeg", CreatedAt: base.Add(2 * time.Second)}
+	for _, j := range []*Job{queuedA, queuedB, failed} {
+		if err := store.CreateJob(j); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.UpdateStatus(failed.ID, StatusFailed, nil, nil, "boom"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simula um reenfileiramento anterior: queuedB já tem priority>0, para
+	// exercitar o caminho MAX(priority)+1 (não só 0+1).
+	if _, err := store.db.Exec(`UPDATE jobs SET priority=? WHERE id=?`, 3, queuedB.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.RequeueJob(failed.ID); err != nil {
+		t.Fatalf("RequeueJob falhou: %v", err)
+	}
+
+	next, err := store.NextPendingJob()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next == nil || next.ID != failed.ID {
+		t.Fatalf("esperava que %s fosse o próximo job reivindicado, obteve %#v", failed.ID, next)
 	}
 }

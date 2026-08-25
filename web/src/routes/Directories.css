@@ -190,16 +190,78 @@
   background: var(--surface-2);
 }
 
-.dir-modal__path {
+/* Breadcrumbs: cada segmento do caminho atual é clicável (exceto o último,
+   a localização corrente) — navega direto para qualquer ancestral em vez de
+   exigir um clique em "Voltar" por nível. */
+.dir-modal__breadcrumbs {
   margin: 0.9rem 1.1rem 0;
   padding: 0.5rem 0.7rem;
   background: var(--ground);
   border: 1px solid var(--border-soft);
   border-radius: var(--radius);
-  font-size: 12.5px;
-  color: var(--signal);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.15em;
   overflow-x: auto;
   white-space: nowrap;
+}
+
+.dir-modal__crumb-sep {
+  color: var(--text-faint);
+  font-size: 12px;
+  margin: 0 0.05em;
+}
+
+.dir-modal__crumb {
+  font-size: 12.5px;
+  color: var(--signal);
+  padding: 0.15em 0.35em;
+  border-radius: var(--radius);
+}
+
+.dir-modal__crumb:not(:disabled):hover {
+  background: var(--surface-2);
+  text-decoration: underline;
+}
+
+.dir-modal__crumb--current {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.dir-modal__crumb:disabled {
+  cursor: default;
+}
+
+/* Atalho para pular direto a um caminho conhecido, sem descer nível a
+   nível — server ainda valida via GET /api/fs/browse (mesma checagem de
+   existência/permissão da navegação normal), então não contorna a decisão
+   de exigir confirmação via navegador antes de adicionar um diretório. */
+.dir-modal__goto {
+  margin: 0.6rem 1.1rem 0;
+  display: flex;
+  gap: 0.5em;
+}
+
+.dir-modal__goto-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.5rem 0.7rem;
+  background: var(--ground);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.dir-modal__goto-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.dir-modal__goto-input::placeholder {
+  color: var(--text-faint);
 }
 
 .dir-modal__error {
@@ -232,9 +294,14 @@
   text-align: left;
 }
 
-.dir-modal__entry:hover {
+.dir-modal__entry:hover:not(:disabled) {
   background: var(--surface-2);
   color: var(--accent);
+}
+
+.dir-modal__entry:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .dir-modal__entry-name {

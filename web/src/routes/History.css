@@ -96,6 +96,15 @@
   background: var(--surface-2);
 }
 
+.history__row {
+  cursor: pointer;
+}
+
+.history__row:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
 .history__path {
   font-family: var(--font-mono);
   max-width: 320px;

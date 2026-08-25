@@ -67,6 +67,7 @@ type App struct {
 // são integradas.
 func (a *App) registerPhaseRoutes(mux *http.ServeMux) {
 	a.registerStagingRoutes(mux)
+	a.registerJobsRoutes(mux)
 	mux.HandleFunc("GET /api/dirs", a.handleListDirs)
 	mux.HandleFunc("POST /api/dirs", a.handleAddDir)
 	mux.HandleFunc("DELETE /api/dirs", a.handleRemoveDir)

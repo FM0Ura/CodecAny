@@ -14,6 +14,11 @@ const (
 	// (auto_approve=false) — o output convertido está em staging aguardando
 	// ApproveJob/RejectJob.
 	EventJobAwaitingApproval JobEventKind = "OnJobAwaitingApproval"
+
+	// EventJobRequeued é emitido quando um usuário reenfileira manualmente um
+	// Job em StatusFailed/StatusRolledBack — prioridade máxima, próximo a
+	// ser reivindicado por NextPendingJob assim que o worker atual terminar.
+	EventJobRequeued JobEventKind = "OnJobRequeued"
 )
 
 // JobEvent é a unidade de comunicação emitida no canal chan JobEvent.
