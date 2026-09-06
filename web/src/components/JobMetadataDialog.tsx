@@ -194,7 +194,7 @@ export function JobMetadataDialog({ job, onClose, onApprove, onReject, onRequeue
 
         {job.error ? (
           <section className="job-drawer__section">
-            <h3>Erro</h3>
+            <h3>{job.status === "IGNORED" ? "Motivo do descarte" : "Erro"}</h3>
             <p className="job-drawer__error">{job.error}</p>
           </section>
         ) : null}

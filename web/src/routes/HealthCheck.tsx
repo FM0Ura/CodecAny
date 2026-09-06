@@ -40,7 +40,7 @@ export function HealthCheck() {
 
   useEffect(() => {
     getDirs()
-      .then(setWatchedDirs)
+      .then((data) => setWatchedDirs(data.map((d) => d.path)))
       .catch(() => {
         // Falha ao listar diretórios monitorados não impede o uso da tela —
         // só o dropdown de escopo fica limitado a "Todos" (vazio) e o

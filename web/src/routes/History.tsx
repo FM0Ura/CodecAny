@@ -10,6 +10,7 @@ import "./History.css";
 const STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: "", label: "Todos os status" },
   { value: "COMPLETED", label: "Concluído" },
+  { value: "IGNORED", label: "Ignorado" },
   { value: "FAILED", label: "Falhou" },
   { value: "ROLLED_BACK", label: "Revertido" },
   { value: "AWAITING_APPROVAL", label: "Aguardando aprovação" },
@@ -222,14 +223,22 @@ export function History() {
                       <StatusChip status={job.status as JobStatus} />
                     </td>
                     <td className="numeric">{formatBytes(job.size_metrics?.original_size_bytes ?? 0)}</td>
-                    <td className="numeric">{formatBytes(job.size_metrics?.converted_size_bytes ?? 0)}</td>
                     <td className="numeric">
-                      {formatBytes(job.size_metrics?.saved_bytes ?? 0)}
-                      {job.size_metrics?.compression_ratio_pct
-                        ? ` (${formatPct(job.size_metrics.compression_ratio_pct)})`
-                        : ""}
+                      {job.size_metrics?.converted_size_bytes ? formatBytes(job.size_metrics.converted_size_bytes) : "—"}
                     </td>
-                    <td className="numeric">{formatDateTime(job.finished_at)}</td>
+                    <td className="numeric">
+                      {job.size_metrics?.saved_bytes ? (
+                        <>
+                          {formatBytes(job.size_metrics.saved_bytes)}
+                          {job.size_metrics.compression_ratio_pct
+                            ? ` (${formatPct(job.size_metrics.compression_ratio_pct)})`
+                            : ""}
+                        </>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+                    <td className="numeric">{formatDateTime(job.finished_at ?? job.created_at)}</td>
                   </tr>
                 ))}
               </tbody>

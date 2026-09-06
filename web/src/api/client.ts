@@ -8,6 +8,7 @@ import type {
   RuleTestRequest,
   RuleTestResult,
   ServerStatus,
+  WatchedDir,
 } from "./types";
 
 /**
@@ -95,6 +96,7 @@ export interface JobFilter {
   status?: string;
   since?: string;
   until?: string;
+  dir?: string;
 }
 
 export function getJobs(filter: JobFilter = {}): Promise<Job[]> {
@@ -102,6 +104,7 @@ export function getJobs(filter: JobFilter = {}): Promise<Job[]> {
   if (filter.status) params.set("status", filter.status);
   if (filter.since) params.set("since", filter.since);
   if (filter.until) params.set("until", filter.until);
+  if (filter.dir) params.set("dir", filter.dir);
   const qs = params.toString();
   return getJSON<Job[]>(`/api/jobs${qs ? `?${qs}` : ""}`);
 }
@@ -213,9 +216,9 @@ export function rejectAll(): Promise<RejectAllResponse> {
 
 // --- Diretórios Monitorados (Fase C) -------------------------------------
 
-/** Lista os diretórios monitorados persistidos (watched_dirs). */
-export function getDirs(): Promise<string[]> {
-  return getJSON<string[]>("/api/dirs");
+/** Lista os diretórios monitorados persistidos acompanhados de estatísticas. */
+export function getDirs(): Promise<WatchedDir[]> {
+  return getJSON<WatchedDir[]>("/api/dirs");
 }
 
 /**
@@ -231,9 +234,10 @@ export function removeDir(path: string): Promise<{ status: string }> {
   return del<{ status: string }>(`/api/dirs?path=${encodeURIComponent(path)}`);
 }
 
-/** Redescobre arquivos já presentes nos diretórios monitorados. */
-export function rescanDirs(): Promise<void> {
-  return postJSON("/api/dirs/rescan");
+/** Redescobre arquivos já presentes nos diretórios monitorados (ou em um específico). */
+export function rescanDirs(path?: string): Promise<void> {
+  const qs = path ? `?path=${encodeURIComponent(path)}` : "";
+  return postJSON(`/api/dirs/rescan${qs}`, path ? { path } : undefined);
 }
 
 /**
@@ -267,4 +271,11 @@ export function putRules(file: RuleFile): Promise<RuleFile> {
 /** POST /api/rules/test — avalia as regras atuais contra `path` ou `media_info`. */
 export function testRule(req: RuleTestRequest): Promise<RuleTestResult> {
   return postJSON<RuleTestResult>("/api/rules/test", req);
+}
+
+// --- Logs do Servidor ----------------------------------------------------
+
+/** GET /api/logs?lines=200 — últimas linhas de log do servidor. */
+export function getServerLogs(lines: number = 200): Promise<import("./types").LogsResponse> {
+  return getJSON<import("./types").LogsResponse>(`/api/logs?lines=${lines}`);
 }

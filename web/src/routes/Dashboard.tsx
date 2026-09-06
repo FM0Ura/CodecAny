@@ -18,6 +18,7 @@ const STATUS_ORDER: JobStatus[] = [
   "FINALIZING",
   "AWAITING_APPROVAL",
   "COMPLETED",
+  "IGNORED",
   "FAILED",
   "ROLLED_BACK",
 ];
@@ -29,6 +30,7 @@ const STATUS_LABEL: Record<JobStatus, string> = {
   TESTING: "Testando",
   FINALIZING: "Finalizando",
   COMPLETED: "Concluído",
+  IGNORED: "Ignorado",
   FAILED: "Falhou",
   ROLLED_BACK: "Revertido",
   AWAITING_APPROVAL: "Aguardando aprovação",

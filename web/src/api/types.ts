@@ -10,7 +10,18 @@ export type JobStatus =
   | "COMPLETED"
   | "FAILED"
   | "ROLLED_BACK"
-  | "AWAITING_APPROVAL";
+  | "AWAITING_APPROVAL"
+  | "IGNORED";
+
+export interface WatchedDir {
+  path: string;
+  completed: number;
+  ignored: number;
+  failed: number;
+  queued: number;
+  total: number;
+}
+
 
 export interface TargetSpec {
   video_codec?: string;
@@ -18,6 +29,7 @@ export interface TargetSpec {
   video_preset?: string;
   video_lossless?: boolean;
   video_hwaccel?: string;
+  video_tune?: string;
   video_max_height?: number;
   audio_codec?: string;
   audio_bitrate?: string;
@@ -68,6 +80,7 @@ export interface Job {
   finished_at?: string;
   error?: string;
   size_metrics: SizeMetrics;
+  matched_rule?: string;
 }
 
 export type JobEventKind =
@@ -167,6 +180,7 @@ export interface RuleTargetVideo {
   codec: string;
   crf: number;
   preset: string;
+  tune?: string;
   lossless: boolean | null;
   hwaccel: string;
   max_height: number;
@@ -199,6 +213,7 @@ export interface RuleDefaults {
     codec: string;
     crf: number;
     preset: string;
+    tune?: string;
     lossless: boolean | null;
     hwaccel: string;
   };
@@ -263,4 +278,19 @@ export interface HealthCheckResult {
   path: string;
   status: HealthCheckStatus;
   error?: string;
+}
+
+export interface LogEntry {
+  time: string;
+  level: string;
+  msg: string;
+  raw: string;
+  source?: string;
+  job_id?: string;
+  path?: string;
+}
+
+export interface LogsResponse {
+  lines: LogEntry[];
+  count: number;
 }

@@ -64,6 +64,12 @@
   border-color: var(--neutral-border);
 }
 
+.chip--ignored {
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border-color: var(--border-soft);
+}
+
 @keyframes chip-pulse {
   0%,
   100% {

@@ -1,7 +1,7 @@
 import type { JobStatus } from "../api/types";
 import "./Chip.css";
 
-export type ChipVariant = "queued" | "progress" | "awaiting" | "completed" | "failed" | "reverted";
+export type ChipVariant = "queued" | "progress" | "awaiting" | "completed" | "failed" | "reverted" | "ignored";
 
 const VARIANT_LABEL: Record<ChipVariant, string> = {
   queued: "Na fila",
@@ -10,6 +10,7 @@ const VARIANT_LABEL: Record<ChipVariant, string> = {
   completed: "Concluído",
   failed: "Falhou",
   reverted: "Revertido",
+  ignored: "Ignorado",
 };
 
 interface ChipProps {
@@ -45,6 +46,8 @@ export function statusToVariant(status: JobStatus): ChipVariant {
       return "failed";
     case "ROLLED_BACK":
       return "reverted";
+    case "IGNORED":
+      return "ignored";
     default:
       return "queued";
   }
@@ -60,6 +63,7 @@ const STATUS_LABEL: Record<JobStatus, string> = {
   FAILED: "Falhou",
   ROLLED_BACK: "Revertido",
   AWAITING_APPROVAL: "Aguardando aprovação",
+  IGNORED: "Ignorado",
 };
 
 /** Chip pronto a partir de um JobStatus bruto do backend. */
