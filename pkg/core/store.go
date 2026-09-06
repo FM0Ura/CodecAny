@@ -65,6 +65,12 @@ func NewStore(path string) (*Store, error) {
 			return nil, fmt.Errorf("migrar coluna output_media_info: %w", err)
 		}
 	}
+	if _, err := db.Exec(`ALTER TABLE jobs ADD COLUMN matched_rule TEXT`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, fmt.Errorf("migrar coluna matched_rule: %w", err)
+		}
+	}
 	return &Store{db: db}, nil
 }
 
@@ -77,6 +83,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     target      TEXT NOT NULL,
     media_info  TEXT NOT NULL,
     output_media_info TEXT,
+    matched_rule TEXT,
     priority    INTEGER DEFAULT 0,
     original_size INTEGER DEFAULT 0,
     converted_size INTEGER DEFAULT 0,
@@ -104,12 +111,12 @@ CREATE TABLE IF NOT EXISTS watched_dirs (
 // usadas pelo caminho de execução original (NextPendingJob etc.).
 const jobColumns = `id, path, status, driver, target, media_info, priority, created_at,
 	started_at, finished_at, original_size, converted_size, saved_bytes, ratio_pct, error,
-	output_media_info`
+	output_media_info, matched_rule`
 
 // Close encerra a conexão com o banco.
 func (s *Store) Close() error { return s.db.Close() }
 
-// CreateJob persiste um novo Job em estado QUEUED.
+// CreateJob persiste um novo Job em estado QUEUED ou IGNORED com seus metadados.
 func (s *Store) CreateJob(job *Job) error {
 	target, err := json.Marshal(job.Target)
 	if err != nil {
@@ -119,11 +126,22 @@ func (s *Store) CreateJob(job *Job) error {
 	if err != nil {
 		return err
 	}
+	var st, fi interface{}
+	if job.StartedAt != nil {
+		st = job.StartedAt.UTC().Format(time.RFC3339)
+	}
+	if job.FinishedAt != nil {
+		fi = job.FinishedAt.UTC().Format(time.RFC3339)
+	}
 	_, err = s.db.Exec(
-		`INSERT INTO jobs (id, path, status, driver, target, media_info, priority, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO jobs (id, path, status, driver, target, media_info, priority, created_at,
+		 started_at, finished_at, original_size, converted_size, saved_bytes, ratio_pct, error, matched_rule)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		job.ID, job.Path, job.Status, job.Driver, string(target), string(mi),
 		job.Priority, job.CreatedAt.UTC().Format(time.RFC3339),
+		st, fi, job.SizeMetrics.OriginalSizeBytes, job.SizeMetrics.ConvertedSizeBytes,
+		job.SizeMetrics.SavedBytes, job.SizeMetrics.CompressionRatioPct, job.Error,
+		job.MatchedRule,
 	)
 	return err
 }
@@ -278,6 +296,67 @@ func (s *Store) ListWatchedDirs() ([]WatchedDir, error) {
 	}
 	return out, rows.Err()
 }
+
+// WatchedDirStats consolida o progresso e estatísticas de arquivos em um diretório monitorado.
+type WatchedDirStats struct {
+	Path      string `json:"path"`
+	Completed int    `json:"completed"`
+	Ignored   int    `json:"ignored"`
+	Failed    int    `json:"failed"`
+	Queued    int    `json:"queued"`
+	Total     int    `json:"total"`
+}
+
+// ListWatchedDirStats lista todos os diretórios monitorados acompanhados das
+// contagens de arquivos concluídos, ignorados, falhos e em fila/andamento.
+func (s *Store) ListWatchedDirStats() ([]WatchedDirStats, error) {
+	dirs, err := s.ListWatchedDirs()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]WatchedDirStats, 0, len(dirs))
+	for _, d := range dirs {
+		stats := WatchedDirStats{
+			Path: d.Path,
+		}
+		cleanPath := filepath.Clean(d.Path)
+		prefixSlash := strings.TrimRight(cleanPath, "/\\") + "/"
+		prefixBackslash := strings.TrimRight(cleanPath, "/\\") + "\\"
+
+		rows, err := s.db.Query(`
+			SELECT status, COUNT(*)
+			FROM jobs
+			WHERE path = ? OR path LIKE ? || '%' OR path LIKE ? || '%'
+			GROUP BY status
+		`, cleanPath, prefixSlash, prefixBackslash)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var status JobStatus
+			var count int
+			if err := rows.Scan(&status, &count); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			stats.Total += count
+			switch status {
+			case StatusCompleted:
+				stats.Completed += count
+			case StatusIgnored:
+				stats.Ignored += count
+			case StatusFailed, StatusRolledBack:
+				stats.Failed += count
+			case StatusQueued, StatusInProgress, StatusTesting, StatusFinalizing, StatusAwaitingApproval:
+				stats.Queued += count
+			}
+		}
+		rows.Close()
+		out = append(out, stats)
+	}
+	return out, nil
+}
+
 
 // maxClaimRetries limita as tentativas de NextPendingJob ao perder a corrida
 // de reivindicação para outro worker (ver comentário em NextPendingJob).
@@ -465,7 +544,7 @@ func (s *Store) ListByStatus(status JobStatus) ([]*Job, error) {
 }
 
 // JobFilter descreve os critérios opcionais de ListJobs (Fase 6 — histórico
-// filtrável). Um campo com valor zero (Status=="" / Since,Until==nil) não
+// filtrável). Um campo com valor zero (Status=="" / Since,Until==nil / Dir=="") não
 // entra na cláusula WHERE — filtro vazio retorna todos os jobs. Until existe
 // para completude do filtro (simetria com Since), mas por ora não tem flag
 // de CLI dedicada; fica disponível para uso programático/futuro.
@@ -473,6 +552,7 @@ type JobFilter struct {
 	Status JobStatus
 	Since  *time.Time
 	Until  *time.Time
+	Dir    string
 }
 
 // ListJobs lista Jobs de acordo com filter, em ordem de criação (created_at
@@ -494,6 +574,13 @@ func (s *Store) ListJobs(filter JobFilter) ([]*Job, error) {
 	if filter.Until != nil {
 		conds = append(conds, "created_at<=?")
 		args = append(args, filter.Until.UTC().Format(time.RFC3339))
+	}
+	if filter.Dir != "" {
+		cleanDir := filepath.Clean(filter.Dir)
+		prefixSlash := strings.TrimRight(cleanDir, "/\\") + "/"
+		prefixBackslash := strings.TrimRight(cleanDir, "/\\") + "\\"
+		conds = append(conds, "(path = ? OR path LIKE ? || '%' OR path LIKE ? || '%')")
+		args = append(args, cleanDir, prefixSlash, prefixBackslash)
 	}
 	if len(conds) > 0 {
 		query += " WHERE " + strings.Join(conds, " AND ")
@@ -531,9 +618,10 @@ func scanJob(row rowScanner) (*Job, error) {
 		savedBytes         sql.NullInt64
 		ratioPct           sql.NullFloat64
 		outputMiRaw        sql.NullString
+		matchedRuleRaw     sql.NullString
 	)
 	err := row.Scan(&j.ID, &j.Path, &j.Status, &j.Driver, &targetRaw, &miRaw, &j.Priority, &createdRaw,
-		&startedRaw, &finRaw, &origSize, &convSize, &savedBytes, &ratioPct, &errMsg, &outputMiRaw)
+		&startedRaw, &finRaw, &origSize, &convSize, &savedBytes, &ratioPct, &errMsg, &outputMiRaw, &matchedRuleRaw)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
@@ -559,6 +647,9 @@ func scanJob(row rowScanner) (*Job, error) {
 		if err := json.Unmarshal([]byte(outputMiRaw.String), &omi); err == nil {
 			j.OutputMediaInfo = &omi
 		}
+	}
+	if matchedRuleRaw.Valid {
+		j.MatchedRule = matchedRuleRaw.String
 	}
 	j.SizeMetrics = SizeMetrics{
 		OriginalSizeBytes:   origSize.Int64,

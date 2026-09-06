@@ -20,6 +20,10 @@ const (
 	// lugar do original porque a regra/default não habilita auto_approve. O
 	// output convertido permanece em staging até ApproveJob/RejectJob decidir.
 	StatusAwaitingApproval JobStatus = "AWAITING_APPROVAL"
+
+	// StatusIgnored representa um arquivo descoberto que foi descartado por não
+	// atender a nenhuma regra de conversão ou por ter casado com ação 'skip'.
+	StatusIgnored JobStatus = "IGNORED"
 )
 
 // MediaInfo carrega os metadados técnicos extraídos pelo MediaProber (RF02).
@@ -79,6 +83,7 @@ type TargetSpec struct {
 	VideoPreset   string `json:"video_preset,omitempty" yaml:"preset,omitempty"`
 	VideoLossless bool   `json:"video_lossless,omitempty" yaml:"lossless,omitempty"`
 	VideoHWAccel  string `json:"video_hwaccel,omitempty" yaml:"hwaccel,omitempty"`
+	VideoTune     string `json:"video_tune,omitempty" yaml:"tune,omitempty"`
 
 	// VideoMaxHeight, quando > 0, limita a altura do vídeo de saída: se a
 	// altura de origem for maior, o transcoder aplica um filtro de downscale
@@ -121,6 +126,10 @@ type Job struct {
 	// jobs que ainda não passaram por essa etapa (QUEUED/IN_PROGRESS/
 	// FAILED/ROLLED_BACK) ou cujo probe falhou.
 	OutputMediaInfo *MediaInfo `json:"output_media_info,omitempty"`
+
+	// MatchedRule carrega o nome da regra com a qual o arquivo casou (ou vazio
+	// se não casou com nenhuma regra / arquivo ignorado).
+	MatchedRule string `json:"matched_rule,omitempty"`
 
 	Priority    int         `json:"priority"`
 	CreatedAt   time.Time   `json:"created_at"`

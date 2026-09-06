@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -152,23 +153,58 @@ func (e *Engine) HandleDiscovered(path string) bool {
 		e.log.Warn("probe falhou", "path", path, "error", err.Error())
 		return false
 	}
-	outcome, target, err := e.rules.Evaluate(mi)
+	outcome, target, ruleName, err := e.rules.Evaluate(mi)
 	if err != nil {
 		e.log.Warn("avaliar regras falhou", "path", path, "error", err.Error())
 		return false
 	}
 	if outcome != OutcomeConvert {
+		reason := e.rules.DescribeMiss(mi)
+		msg := "nenhuma regra atendida: " + reason
 		if outcome == OutcomeSkip {
+			msg = fmt.Sprintf("regra [%s] solicitou skip: %s", ruleName, reason)
 			e.log.Info("regra solicitou skip", "path", path,
+				"rule", ruleName,
 				"container", mi.Container, "video_codec", mi.VideoCodec,
 				"audio_codecs", mi.AudioCodecs,
-				"reason", e.rules.DescribeMiss(mi))
-			return false
+				"reason", reason)
+		} else {
+			e.log.Info("nenhuma regra atendida - arquivo ignorado", "path", path,
+				"container", mi.Container, "video_codec", mi.VideoCodec,
+				"audio_codecs", mi.AudioCodecs,
+				"reason", reason)
 		}
-		e.log.Info("nenhuma regra atendida - arquivo ignorado", "path", path,
-			"container", mi.Container, "video_codec", mi.VideoCodec,
-			"audio_codecs", mi.AudioCodecs,
-			"reason", e.rules.DescribeMiss(mi))
+
+		if existing, err := e.store.FindByPath(path); err == nil && existing != nil {
+			if existing.Status != StatusFailed && existing.Status != StatusRolledBack {
+				return false
+			}
+		}
+
+		var origSize int64
+		if fi, err := os.Stat(path); err == nil {
+			origSize = fi.Size()
+		}
+		driver := e.rules.Global().DefaultDriver
+		fin := time.Now()
+		job := &Job{
+			ID:          uuid.NewString(),
+			Path:        path,
+			Status:      StatusIgnored,
+			Driver:      driver,
+			Target:      target,
+			MediaInfo:   mi,
+			MatchedRule: ruleName,
+			CreatedAt:   fin,
+			FinishedAt:  &fin,
+			Error:       msg,
+			SizeMetrics: SizeMetrics{
+				OriginalSizeBytes: origSize,
+			},
+		}
+		if err := e.store.CreateJob(job); err != nil {
+			e.log.Error("falha ao registrar arquivo ignorado", "path", path, "error", err.Error())
+		}
 		return false
 	}
 	driver := e.rules.Global().DefaultDriver
@@ -178,24 +214,25 @@ func (e *Engine) HandleDiscovered(path string) bool {
 	}
 	if existing, err := e.store.FindByPath(path); err == nil && existing != nil {
 		// já existe job para este caminho
-		if existing.Status != StatusFailed && existing.Status != StatusRolledBack {
+		if existing.Status != StatusFailed && existing.Status != StatusRolledBack && existing.Status != StatusIgnored {
 			return false
 		}
 	}
 	job := &Job{
-		ID:        uuid.NewString(),
-		Path:      path,
-		Status:    StatusQueued,
-		Driver:    driver,
-		Target:    target,
-		MediaInfo: mi,
-		CreatedAt: time.Now(),
+		ID:          uuid.NewString(),
+		Path:        path,
+		Status:      StatusQueued,
+		Driver:      driver,
+		Target:      target,
+		MediaInfo:   mi,
+		MatchedRule: ruleName,
+		CreatedAt:   time.Now(),
 	}
 	if err := e.store.CreateJob(job); err != nil {
 		e.log.Error("falha ao criar job", "path", path, "error", err.Error())
 		return false
 	}
-	e.log.Info("job enfileirado", "job_id", job.ID, "path", job.Path, "driver", job.Driver)
+	e.log.Info("job enfileirado", "job_id", job.ID, "path", job.Path, "driver", job.Driver, "rule", job.MatchedRule)
 	return true
 }
 
@@ -821,6 +858,15 @@ func (e *Engine) ListWatchedDirs() ([]string, error) {
 	return out, nil
 }
 
+// ListWatchedDirStats lista os diretórios monitorados persistidos acompanhados
+// das estatísticas de arquivos concluídos, ignorados, falhos e totais.
+func (e *Engine) ListWatchedDirStats() ([]WatchedDirStats, error) {
+	if e.store == nil {
+		return nil, fmt.Errorf("store não inicializado")
+	}
+	return e.store.ListWatchedDirStats()
+}
+
 // RescanDirs redescobre arquivos já presentes em todos os diretórios
 // monitorados persistidos, reusando o mesmo par DiscoverFiles+
 // HandleDiscovered de RunOnce (modo one-shot) — útil quando arquivos foram
@@ -832,6 +878,19 @@ func (e *Engine) RescanDirs() error {
 		return err
 	}
 	files, err := DiscoverFiles(dirs)
+	if err != nil {
+		return err
+	}
+	for _, f := range files {
+		e.HandleDiscovered(f)
+	}
+	return nil
+}
+
+// RescanDir redescobre arquivos presentes em um diretório específico.
+func (e *Engine) RescanDir(dir string) error {
+	cleanDir := filepath.Clean(dir)
+	files, err := DiscoverFiles([]string{cleanDir})
 	if err != nil {
 		return err
 	}

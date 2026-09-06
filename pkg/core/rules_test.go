@@ -43,12 +43,15 @@ rules:
 func TestRulesEvaluateFirstMatch(t *testing.T) {
 	r := mustEngine(t, baseRules)
 	mi := MediaInfo{Container: "mkv", VideoCodec: "h264", AudioCodecs: []string{"aac"}}
-	outcome, spec, err := r.Evaluate(mi)
+	outcome, spec, ruleName, err := r.Evaluate(mi)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if outcome != OutcomeConvert {
 		t.Fatalf("esperava convert, obteve %v", outcome)
+	}
+	if ruleName != "h264 -> hevc" {
+		t.Errorf("esperava regra 'h264 -> hevc', obteve %q", ruleName)
 	}
 	if spec.VideoCodec != "hevc" {
 		t.Errorf("esperava hevc, obteve %s", spec.VideoCodec)
@@ -64,7 +67,7 @@ func TestRulesEvaluateFirstMatch(t *testing.T) {
 func TestRulesEvaluateContainerNoMatch(t *testing.T) {
 	r := mustEngine(t, baseRules)
 	mi := MediaInfo{Container: "mp4", VideoCodec: "h264"}
-	outcome, _, err := r.Evaluate(mi)
+	outcome, _, _, err := r.Evaluate(mi)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +112,7 @@ rules:
 	r := mustEngine(t, content)
 	// áudio flac não casa com a regra, mas NÃO deve impedir a conversão
 	mi := MediaInfo{Container: "matroska,webm", VideoCodec: "h264", AudioCodecs: []string{"flac"}}
-	outcome, _, err := r.Evaluate(mi)
+	outcome, _, _, err := r.Evaluate(mi)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,12 +141,15 @@ rules:
 `
 	r := mustEngine(t, content)
 	mi := MediaInfo{Container: "mkv", VideoCodec: "av1"}
-	outcome, _, err := r.Evaluate(mi)
+	outcome, _, ruleName, err := r.Evaluate(mi)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if outcome != OutcomeSkip {
 		t.Fatalf("esperava skip, obteve %v", outcome)
+	}
+	if ruleName != "av1 skip" {
+		t.Fatalf("esperava ruleName 'av1 skip', obteve %q", ruleName)
 	}
 }
 
@@ -159,7 +165,7 @@ rules:
 `
 	r := mustEngine(t, content)
 	mi := MediaInfo{Container: "mkv", AudioCodecs: []string{"ac3"}}
-	outcome, _, err := r.Evaluate(mi)
+	outcome, _, _, err := r.Evaluate(mi)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +185,7 @@ func TestRulesJSONFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	outcome, spec, err := r.Evaluate(MediaInfo{Container: "any", VideoCodec: "h264"})
+	outcome, spec, _, err := r.Evaluate(MediaInfo{Container: "any", VideoCodec: "h264"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +207,7 @@ func TestRulesContainerNormalization(t *testing.T) {
 	// regra "h264 -> hevc" aceita container mkv; mídia real reporta matroska,webm
 	r := mustEngine(t, baseRules)
 	mi := MediaInfo{Container: "matroska,webm", VideoCodec: "h264", AudioCodecs: []string{"aac"}}
-	outcome, _, err := r.Evaluate(mi)
+	outcome, _, _, err := r.Evaluate(mi)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +231,7 @@ rules:
 	r := mustEngine(t, content)
 	// ffprobe de um MP4 real retorna "mov,mp4,m4a,3gp,3g2,mj2"
 	mi := MediaInfo{Container: "mov,mp4,m4a,3gp,3g2,mj2", VideoCodec: "h264"}
-	outcome, _, err := r.Evaluate(mi)
+	outcome, _, _, err := r.Evaluate(mi)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +256,7 @@ rules:
 `
 	r := mustEngine(t, content)
 	mi := MediaInfo{Container: "mkv", VideoCodec: "h264"}
-	outcome, spec, err := r.Evaluate(mi)
+	outcome, spec, _, err := r.Evaluate(mi)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +293,7 @@ rules:
 `
 	r := mustEngine(t, content)
 	mi := MediaInfo{Container: "mkv", VideoCodec: "h264"}
-	outcome, spec, err := r.Evaluate(mi)
+	outcome, spec, _, err := r.Evaluate(mi)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,7 +336,7 @@ rules:
 	r := mustEngine(t, content)
 
 	// Sem override na regra: herda o default global (true).
-	_, spec1, err := r.Evaluate(MediaInfo{Container: "mkv", VideoCodec: "h264"})
+	_, spec1, _, err := r.Evaluate(MediaInfo{Container: "mkv", VideoCodec: "h264"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +345,7 @@ rules:
 	}
 
 	// Com override explícito na regra: vence o default global.
-	_, spec2, err := r.Evaluate(MediaInfo{Container: "mp4", VideoCodec: "h264"})
+	_, spec2, _, err := r.Evaluate(MediaInfo{Container: "mp4", VideoCodec: "h264"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,7 +359,7 @@ rules:
 // resultado deve ser false — exige aprovação manual por padrão.
 func TestMergeSpecAutoApproveDefaultsFalse(t *testing.T) {
 	r := mustEngine(t, baseRules) // baseRules não define auto_approve em lugar nenhum
-	_, spec, err := r.Evaluate(MediaInfo{Container: "mkv", VideoCodec: "h264", AudioCodecs: []string{"aac"}})
+	_, spec, _, err := r.Evaluate(MediaInfo{Container: "mkv", VideoCodec: "h264", AudioCodecs: []string{"aac"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -378,7 +384,7 @@ rules:
 	r := mustEngine(t, content)
 
 	// Altura acima do min_height: casa.
-	outcome, spec, err := r.Evaluate(MediaInfo{Container: "mkv", VideoCodec: "h264", Height: 2160})
+	outcome, spec, _, err := r.Evaluate(MediaInfo{Container: "mkv", VideoCodec: "h264", Height: 2160})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -390,7 +396,7 @@ rules:
 	}
 
 	// Altura abaixo do min_height: não casa.
-	outcome, _, err = r.Evaluate(MediaInfo{Container: "mkv", VideoCodec: "h264", Height: 720})
+	outcome, _, _, err = r.Evaluate(MediaInfo{Container: "mkv", VideoCodec: "h264", Height: 720})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -414,7 +420,7 @@ rules:
 `
 	r := mustEngine(t, content)
 
-	outcome, _, err := r.Evaluate(MediaInfo{Container: "mkv", VideoCodec: "h264", Height: 480})
+	outcome, _, _, err := r.Evaluate(MediaInfo{Container: "mkv", VideoCodec: "h264", Height: 480})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -422,7 +428,7 @@ rules:
 		t.Fatalf("altura 480 <= max_height 720 deveria casar; obteve %v", outcome)
 	}
 
-	outcome, _, err = r.Evaluate(MediaInfo{Container: "mkv", VideoCodec: "h264", Height: 1080})
+	outcome, _, _, err = r.Evaluate(MediaInfo{Container: "mkv", VideoCodec: "h264", Height: 1080})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -447,7 +453,7 @@ rules:
 	r := mustEngine(t, content)
 
 	// Codec casa, altura casa: convert.
-	outcome, _, err := r.Evaluate(MediaInfo{Container: "mkv", VideoCodec: "h264", Height: 2160})
+	outcome, _, _, err := r.Evaluate(MediaInfo{Container: "mkv", VideoCodec: "h264", Height: 2160})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -456,7 +462,7 @@ rules:
 	}
 
 	// Codec casa, altura NÃO casa: não deve casar.
-	outcome, _, err = r.Evaluate(MediaInfo{Container: "mkv", VideoCodec: "h264", Height: 1080})
+	outcome, _, _, err = r.Evaluate(MediaInfo{Container: "mkv", VideoCodec: "h264", Height: 1080})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -465,7 +471,7 @@ rules:
 	}
 
 	// Altura casa, codec NÃO casa: não deve casar.
-	outcome, _, err = r.Evaluate(MediaInfo{Container: "mkv", VideoCodec: "hevc", Height: 2160})
+	outcome, _, _, err = r.Evaluate(MediaInfo{Container: "mkv", VideoCodec: "hevc", Height: 2160})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -491,7 +497,7 @@ rules:
 	r := mustEngine(t, content)
 
 	// 10000 kbps (10_000_000 bps) >= 8000 kbps: casa.
-	outcome, _, err := r.Evaluate(MediaInfo{Container: "mkv", VideoCodec: "h264", VideoBitrate: 10_000_000})
+	outcome, _, _, err := r.Evaluate(MediaInfo{Container: "mkv", VideoCodec: "h264", VideoBitrate: 10_000_000})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -500,7 +506,7 @@ rules:
 	}
 
 	// 4000 kbps < 8000 kbps: não casa.
-	outcome, _, err = r.Evaluate(MediaInfo{Container: "mkv", VideoCodec: "h264", VideoBitrate: 4_000_000})
+	outcome, _, _, err = r.Evaluate(MediaInfo{Container: "mkv", VideoCodec: "h264", VideoBitrate: 4_000_000})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -534,7 +540,7 @@ rules:
 
 	// Caso 1: Regra sem hwaccel específico deve herdar o global default (vaapi)
 	mi1 := MediaInfo{Container: "mkv", VideoCodec: "h264"}
-	_, spec1, err := r.Evaluate(mi1)
+	_, spec1, _, err := r.Evaluate(mi1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -544,7 +550,7 @@ rules:
 
 	// Caso 2: Regra com hwaccel específico deve vencer o default (nvenc)
 	mi2 := MediaInfo{Container: "mp4", VideoCodec: "h264"}
-	_, spec2, err := r.Evaluate(mi2)
+	_, spec2, _, err := r.Evaluate(mi2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -652,7 +658,7 @@ rules:
 	r := mustEngine(t, content)
 	mi := MediaInfo{Container: "mkv", VideoCodec: "h264"}
 
-	outcome, spec, err := r.Evaluate(mi)
+	outcome, spec, _, err := r.Evaluate(mi)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -757,3 +763,52 @@ func TestRuleFileValidate(t *testing.T) {
 		}
 	})
 }
+
+func TestRulesVideoTune(t *testing.T) {
+	content := `
+version: 1
+global:
+  staging_dir: /tmp/xs
+  defaults:
+    video: { codec: hevc, crf: 22, preset: slow, tune: film }
+rules:
+  - name: anime_tune_rule
+    match:
+      video: { codec: h264 }
+    convert:
+      video: { codec: libx264, tune: animation }
+  - name: default_tune_rule
+    match:
+      video: { codec: mpeg2video }
+    convert:
+      video: { codec: hevc }
+`
+	r := mustEngine(t, content)
+
+	// Regra 1: sobrescreve tune para "animation"
+	mi1 := MediaInfo{VideoCodec: "h264"}
+	outcome1, spec1, _, err := r.Evaluate(mi1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome1 != OutcomeConvert {
+		t.Fatalf("esperava OutcomeConvert, obteve %v", outcome1)
+	}
+	if spec1.VideoTune != "animation" {
+		t.Fatalf("esperava VideoTune=animation, obteve %q", spec1.VideoTune)
+	}
+
+	// Regra 2: herda tune "film" dos defaults globais
+	mi2 := MediaInfo{VideoCodec: "mpeg2video"}
+	outcome2, spec2, _, err := r.Evaluate(mi2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome2 != OutcomeConvert {
+		t.Fatalf("esperava OutcomeConvert, obteve %v", outcome2)
+	}
+	if spec2.VideoTune != "film" {
+		t.Fatalf("esperava VideoTune=film herdado do default global, obteve %q", spec2.VideoTune)
+	}
+}
+

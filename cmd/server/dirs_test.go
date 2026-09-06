@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/FM0Ura/codecany/pkg/core"
 )
@@ -37,12 +38,12 @@ func postJSON(t *testing.T, url, path string) *http.Response {
 	return resp
 }
 
-func decodeStrings(t *testing.T, resp *http.Response) []string {
+func decodeDirs(t *testing.T, resp *http.Response) []core.WatchedDirStats {
 	t.Helper()
 	defer resp.Body.Close()
-	var out []string
+	var out []core.WatchedDirStats
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		t.Fatalf("decode []string: %v", err)
+		t.Fatalf("decode []core.WatchedDirStats: %v", err)
 	}
 	return out
 }
@@ -62,7 +63,7 @@ func TestDirsCRUD(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
-	if got := decodeStrings(t, resp); len(got) != 0 {
+	if got := decodeDirs(t, resp); len(got) != 0 {
 		t.Fatalf("esperava lista vazia, obteve %v", got)
 	}
 
@@ -78,8 +79,8 @@ func TestDirsCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /api/dirs: %v", err)
 	}
-	got := decodeStrings(t, resp)
-	if len(got) != 1 || got[0] != filepath.Clean(dir) {
+	got := decodeDirs(t, resp)
+	if len(got) != 1 || got[0].Path != filepath.Clean(dir) {
 		t.Fatalf("esperava [%s], obteve %v", dir, got)
 	}
 
@@ -151,7 +152,7 @@ func TestDirsCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /api/dirs: %v", err)
 	}
-	if got := decodeStrings(t, resp); len(got) != 0 {
+	if got := decodeDirs(t, resp); len(got) != 0 {
 		t.Fatalf("esperava lista vazia após remoção, obteve %v", got)
 	}
 }
@@ -195,6 +196,71 @@ func TestDirsRescan(t *testing.T) {
 	}
 	if job.Status != core.StatusQueued {
 		t.Errorf("status = %v, want QUEUED", job.Status)
+	}
+
+	// GET /api/dirs reporta 1 na fila.
+	getResp, err := http.Get(srv.URL + "/api/dirs")
+	if err != nil {
+		t.Fatalf("GET /api/dirs: %v", err)
+	}
+	defer getResp.Body.Close()
+	dirs := decodeDirs(t, getResp)
+	if len(dirs) != 1 {
+		t.Fatalf("esperava 1 dir, obteve %d", len(dirs))
+	}
+	if dirs[0].Queued != 1 || dirs[0].Total != 1 {
+		t.Errorf("estatísticas inesperadas: %+v", dirs[0])
+	}
+}
+
+func TestDirsStatsReporting(t *testing.T) {
+	ts := newTestServer(t)
+	srv := httptest.NewServer(ts.app.Handler())
+	defer srv.Close()
+
+	dir := t.TempDir()
+	resp := postJSON(t, srv.URL+"/api/dirs", dir)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /api/dirs: status = %d, want 200", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// Cria jobs com diferentes status dentro de dir.
+	_ = ts.store.CreateJob(&core.Job{
+		ID:        "j1",
+		Path:      filepath.Join(dir, "ep1.mkv"),
+		Status:    core.StatusCompleted,
+		Driver:    "mock",
+		CreatedAt: time.Now(),
+	})
+	_ = ts.store.CreateJob(&core.Job{
+		ID:        "j2",
+		Path:      filepath.Join(dir, "sub", "ep2.mkv"),
+		Status:    core.StatusIgnored,
+		Driver:    "mock",
+		CreatedAt: time.Now(),
+		Error:     "nenhuma regra atendida",
+	})
+	_ = ts.store.CreateJob(&core.Job{
+		ID:        "j3",
+		Path:      filepath.Join(dir, "ep3.mkv"),
+		Status:    core.StatusFailed,
+		Driver:    "mock",
+		CreatedAt: time.Now(),
+		Error:     "transcode failed",
+	})
+
+	getResp, err := http.Get(srv.URL + "/api/dirs")
+	if err != nil {
+		t.Fatalf("GET /api/dirs: %v", err)
+	}
+	dirs := decodeDirs(t, getResp)
+	if len(dirs) != 1 {
+		t.Fatalf("esperava 1 dir, obteve %d", len(dirs))
+	}
+	d := dirs[0]
+	if d.Completed != 1 || d.Ignored != 1 || d.Failed != 1 || d.Total != 3 {
+		t.Errorf("estatísticas incorretas: %+v, want completed=1 ignored=1 failed=1 total=3", d)
 	}
 }
 

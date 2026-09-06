@@ -638,3 +638,66 @@ func TestStoreRequeueJobGetsTopPriority(t *testing.T) {
 		t.Fatalf("esperava que %s fosse o próximo job reivindicado, obteve %#v", failed.ID, next)
 	}
 }
+
+func TestStoreListWatchedDirStats(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	if err := store.AddWatchedDir("/media/anime"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddWatchedDir("/media/movies"); err != nil {
+		t.Fatal(err)
+	}
+
+	fin := time.Now()
+	// Anime jobs
+	_ = store.CreateJob(&Job{
+		ID: "a1", Path: "/media/anime/naruto/ep1.mkv", Status: StatusCompleted, Driver: "mock",
+		FinishedAt: &fin, SizeMetrics: SizeMetrics{OriginalSizeBytes: 1000},
+	})
+	_ = store.CreateJob(&Job{
+		ID: "a2", Path: "/media/anime/naruto/ep2.mkv", Status: StatusIgnored, Driver: "mock",
+		FinishedAt: &fin, Error: "nenhuma regra atendida", SizeMetrics: SizeMetrics{OriginalSizeBytes: 800},
+	})
+	_ = store.CreateJob(&Job{
+		ID: "a3", Path: "/media/anime/bleach/ep1.mkv", Status: StatusFailed, Driver: "mock",
+		FinishedAt: &fin, Error: "ffmpeg error",
+	})
+	_ = store.CreateJob(&Job{
+		ID: "a4", Path: "/media/anime/bleach/ep2.mkv", Status: StatusQueued, Driver: "mock",
+	})
+
+	// Movies jobs
+	_ = store.CreateJob(&Job{
+		ID: "m1", Path: "/media/movies/matrix.mkv", Status: StatusCompleted, Driver: "mock",
+	})
+
+	stats, err := store.ListWatchedDirStats()
+	if err != nil {
+		t.Fatalf("ListWatchedDirStats: %v", err)
+	}
+	if len(stats) != 2 {
+		t.Fatalf("esperava 2 dirs, obteve %d", len(stats))
+	}
+
+	anime := stats[0]
+	if anime.Path != "/media/anime" {
+		t.Errorf("path = %s, want /media/anime", anime.Path)
+	}
+	if anime.Completed != 1 || anime.Ignored != 1 || anime.Failed != 1 || anime.Queued != 1 || anime.Total != 4 {
+		t.Errorf("anime stats = %+v, want completed=1 ignored=1 failed=1 queued=1 total=4", anime)
+	}
+
+	movies := stats[1]
+	if movies.Path != "/media/movies" {
+		t.Errorf("path = %s, want /media/movies", movies.Path)
+	}
+	if movies.Completed != 1 || movies.Ignored != 0 || movies.Failed != 0 || movies.Total != 1 {
+		t.Errorf("movies stats = %+v, want completed=1 ignored=0 failed=0 total=1", movies)
+	}
+}

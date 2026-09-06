@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+
+	"github.com/FM0Ura/codecany/pkg/core"
 )
 
 // addDirRequest é o shape do body de POST /api/dirs.
@@ -13,18 +15,18 @@ type addDirRequest struct {
 }
 
 // handleListDirs atende GET /api/dirs — lista os diretórios monitorados
-// persistidos (Engine.ListWatchedDirs, itens 5/6/10 da proposta).
+// persistidos acompanhados de estatísticas de conclusão, descarte e falha.
 func (a *App) handleListDirs(w http.ResponseWriter, r *http.Request) {
-	dirs, err := a.Engine.ListWatchedDirs()
+	stats, err := a.Engine.ListWatchedDirStats()
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if dirs == nil {
+	if stats == nil {
 		// [] em vez de null no JSON — mesma convenção de handleListJobs.
-		dirs = []string{}
+		stats = []core.WatchedDirStats{}
 	}
-	writeJSON(w, http.StatusOK, dirs)
+	writeJSON(w, http.StatusOK, stats)
 }
 
 // handleAddDir atende POST /api/dirs {path}. Valida que path existe e é um
@@ -87,8 +89,25 @@ func (a *App) handleRemoveDir(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleRescanDirs atende POST /api/dirs/rescan — redescobre arquivos já
-// presentes nos diretórios monitorados persistidos (Engine.RescanDirs).
+// presentes nos diretórios monitorados persistidos (Engine.RescanDirs) ou
+// em um diretório específico quando path é informado (Engine.RescanDir).
 func (a *App) handleRescanDirs(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Query().Get("path")
+	if path == "" && r.Body != nil {
+		var req struct {
+			Path string `json:"path"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		path = req.Path
+	}
+	if path != "" {
+		if err := a.Engine.RescanDir(filepath.Clean(path)); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "rescanned", "path": path})
+		return
+	}
 	if err := a.Engine.RescanDirs(); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return

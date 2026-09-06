@@ -1546,3 +1546,75 @@ func TestEngineRecoverStuckTestingRequeues(t *testing.T) {
 		t.Error("esperava HandleDiscovered aceitar o path após recovery (job anterior é FAILED)")
 	}
 }
+
+func TestEngineHandleDiscoveredIgnoredFile(t *testing.T) {
+	base := t.TempDir()
+	stage := filepath.Join(base, "staging")
+	mediaPath := filepath.Join(base, "episode.mkv")
+	writeFileSize(t, mediaPath, 1200)
+
+	// Regra que só casa com hevc
+	rulesContent := "version: 1\nglobal:\n  default_driver: mock\n  staging_dir: " + stage + "\n  defaults:\n    video: { codec: av1 }\nrules:\n  - name: convert_hevc_only\n    match:\n      video: { codec: hevc }\n    convert:\n      video: { codec: av1 }\n"
+	rulesPath := writeRules(t, rulesContent)
+
+	store, err := NewStore(filepath.Join(base, "codecany.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	re, err := NewRulesEngine(rulesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	eng, err := NewEngine(EngineDeps{
+		Store:  store,
+		Rules:  re,
+		Prober: mockProber{info: MediaInfo{Container: "mkv", VideoCodec: "h264"}},
+		Logger: slog.New(slog.NewTextHandler(os.Stderr, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// h264 não casa com hevc -> deve ser ignorado
+	created := eng.HandleDiscovered(mediaPath)
+	if created {
+		t.Errorf("HandleDiscovered deveria retornar false para arquivo ignorado")
+	}
+
+	job, err := store.FindByPath(mediaPath)
+	if err != nil {
+		t.Fatalf("FindByPath: %v", err)
+	}
+	if job == nil {
+		t.Fatal("esperava job persistido no store com status IGNORED")
+	}
+	if job.Status != StatusIgnored {
+		t.Errorf("status = %v, want IGNORED", job.Status)
+	}
+	if !strings.Contains(job.Error, "nenhuma regra atendida") {
+		t.Errorf("error = %q, want mention of nenhuma regra atendida", job.Error)
+	}
+	if job.SizeMetrics.OriginalSizeBytes != 1200 {
+		t.Errorf("original_size = %d, want 1200", job.SizeMetrics.OriginalSizeBytes)
+	}
+	if job.FinishedAt == nil {
+		t.Errorf("finished_at deveria estar preenchido para job IGNORED")
+	}
+
+	// Segundo HandleDiscovered não duplica
+	createdSecond := eng.HandleDiscovered(mediaPath)
+	if createdSecond {
+		t.Errorf("segundo HandleDiscovered deveria retornar false")
+	}
+	jobs, err := store.ListJobs(JobFilter{Status: StatusIgnored})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 {
+		t.Errorf("esperava exatamente 1 job IGNORED, obteve %d", len(jobs))
+	}
+}
+

@@ -17,7 +17,7 @@ func TestExampleRulesParse(t *testing.T) {
 	// Sem VideoBitrate, não casa a 1ª regra (Remux, exige min_bitrate_kbps),
 	// e cai na 2ª (fallback H264/MJPEG já codificado) — outcome continua
 	// OutcomeConvert de qualquer forma.
-	outcome, _, err := r.Evaluate(MediaInfo{Container: "mkv", VideoCodec: "h264", AudioCodecs: []string{"ac3"}})
+	outcome, _, _, err := r.Evaluate(MediaInfo{Container: "mkv", VideoCodec: "h264", AudioCodecs: []string{"ac3"}})
 	if err != nil {
 		t.Fatal(err)
 	}

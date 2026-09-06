@@ -87,8 +87,10 @@ func (a *App) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/dashboard/summary", a.handleDashboardSummary)
 	mux.HandleFunc("GET /api/jobs", a.handleListJobs)
 	mux.HandleFunc("GET /api/jobs/{id}", a.handleGetJob)
+	mux.HandleFunc("GET /api/health-check", a.handleHealthCheck)
 	mux.HandleFunc("POST /api/health-check", a.handleHealthCheck)
 	mux.HandleFunc("GET /api/events", a.Broadcaster.ServeHTTP)
+	mux.HandleFunc("GET /api/logs", a.handleGetLogs)
 	a.registerPhaseRoutes(mux)
 	mux.Handle("/", a.Assets)
 	return mux
@@ -228,6 +230,9 @@ func (a *App) handleListJobs(w http.ResponseWriter, r *http.Request) {
 		}
 		t := time.Now().Add(-d)
 		filter.Until = &t
+	}
+	if d := r.URL.Query().Get("dir"); d != "" {
+		filter.Dir = d
 	}
 
 	jobs, err := a.Engine.ListJobs(filter)

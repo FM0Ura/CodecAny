@@ -26,6 +26,7 @@ type RuleDefaults struct {
 		Preset   string `yaml:"preset" json:"preset"`
 		Lossless *bool  `yaml:"lossless" json:"lossless"`
 		HWAccel  string `yaml:"hwaccel" json:"hwaccel"`
+		Tune     string `yaml:"tune" json:"tune"`
 	} `yaml:"video" json:"video"`
 	Audio struct {
 		Codec   string `yaml:"codec" json:"codec"`
@@ -97,6 +98,7 @@ type TargetSpecVideo struct {
 	Preset   string `yaml:"preset" json:"preset"`
 	Lossless *bool  `yaml:"lossless" json:"lossless"`
 	HWAccel  string `yaml:"hwaccel" json:"hwaccel"`
+	Tune     string `yaml:"tune" json:"tune"`
 
 	// MaxHeight, quando > 0, define o teto de altura do vídeo de saída (ver
 	// TargetSpec.VideoMaxHeight em types.go). Só existe a nível de regra, sem
@@ -454,23 +456,23 @@ const (
 )
 
 // Evaluate aplica first-match wins sobre uma MediaInfo (seção 4.2).
-// Retorna o TargetSpec (merged com defaults) e o outcome. Usa um único
-// snapshot (r.current()) para toda a avaliação — mesmo que um Reload
+// Retorna o TargetSpec (merged com defaults), o nome da regra que casou e o outcome.
+// Usa um único snapshot (r.current()) para toda a avaliação — mesmo que um Reload
 // concorrente troque o snapshot ativo no meio da chamada, esta avaliação vê
 // um RuleFile consistente do início ao fim (nunca uma mistura das regras
 // antigas com os defaults novos ou vice-versa).
-func (r *RulesEngine) Evaluate(mi MediaInfo) (RuleOutcome, TargetSpec, error) {
+func (r *RulesEngine) Evaluate(mi MediaInfo) (RuleOutcome, TargetSpec, string, error) {
 	f := r.current()
 	for _, rule := range f.Rules {
 		if !ruleMatches(rule, mi) {
 			continue
 		}
 		if rule.Action == ActionSkip {
-			return OutcomeSkip, TargetSpec{}, nil
+			return OutcomeSkip, TargetSpec{}, rule.Name, nil
 		}
-		return OutcomeConvert, mergeSpec(rule, f.Global.Defaults), nil
+		return OutcomeConvert, mergeSpec(rule, f.Global.Defaults), rule.Name, nil
 	}
-	return OutcomeSkipNoRule, TargetSpec{}, nil
+	return OutcomeSkipNoRule, TargetSpec{}, "", nil
 }
 
 // ruleMatches decide se `rule` casa com `mi`. Regras desabilitadas
@@ -699,6 +701,7 @@ func mergeSpec(rule Rule, def RuleDefaults) TargetSpec {
 		out.VideoCRF = c.Video.CRF
 		out.VideoPreset = c.Video.Preset
 		out.VideoHWAccel = c.Video.HWAccel
+		out.VideoTune = c.Video.Tune
 		// Só nível de regra, sem default global (ver TargetSpec.VideoMaxHeight).
 		out.VideoMaxHeight = c.Video.MaxHeight
 		if c.Video.Lossless != nil {
@@ -722,6 +725,9 @@ func mergeSpec(rule Rule, def RuleDefaults) TargetSpec {
 	}
 	if out.VideoPreset == "" {
 		out.VideoPreset = def.Video.Preset
+	}
+	if out.VideoTune == "" {
+		out.VideoTune = def.Video.Tune
 	}
 	if c.Audio != nil {
 		out.AudioCodec = c.Audio.Codec

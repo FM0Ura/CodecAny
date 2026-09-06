@@ -24,6 +24,7 @@ type rulesTestRequest struct {
 type rulesTestResponse struct {
 	Outcome      string          `json:"outcome"`
 	TargetSpec   core.TargetSpec `json:"target_spec"`
+	MatchedRule  string          `json:"matched_rule,omitempty"`
 	DescribeMiss string          `json:"describe_miss"`
 }
 
@@ -107,7 +108,7 @@ func (a *App) handleTestRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	outcome, target, err := a.Rules.Evaluate(mi)
+	outcome, target, ruleName, err := a.Rules.Evaluate(mi)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -115,6 +116,7 @@ func (a *App) handleTestRule(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, rulesTestResponse{
 		Outcome:      ruleOutcomeString(outcome),
 		TargetSpec:   target,
+		MatchedRule:  ruleName,
 		DescribeMiss: a.Rules.DescribeMiss(mi),
 	})
 }
