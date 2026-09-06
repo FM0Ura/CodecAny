@@ -133,6 +133,34 @@ func TestBuildArgs(t *testing.T) {
 			},
 		},
 		{
+			name: "AV1 with textual preset 'slow' and tune 'animation' normalized to '4' and '0'",
+			target: core.TargetSpec{
+				VideoCodec:  "libsvtav1",
+				VideoCRF:    22,
+				VideoPreset: "slow",
+				VideoTune:   "animation",
+			},
+			want: []string{
+				"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-stats_period", "0.1",
+				"-c:v", "copy", "-c:v:0", "libsvtav1", "-preset", "4", "-crf", "22",
+				"-pix_fmt", "yuv420p10le", "-svtav1-params", "tune=0",
+				"-c:s", "copy",
+			},
+		},
+		{
+			name: "H265 NVENC with textual preset 'slow' normalized to 'p6'",
+			target: core.TargetSpec{
+				VideoCodec:   "hevc",
+				VideoHWAccel: "nvenc",
+				VideoPreset:  "slow",
+			},
+			want: []string{
+				"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-stats_period", "0.1",
+				"-c:v", "copy", "-c:v:0", "hevc_nvenc", "-preset", "p6", "-rc", "vbr", "-cq", "23",
+				"-pix_fmt", "yuv420p10le", "-c:s", "copy",
+			},
+		},
+		{
 			name: "H265 to MP4 with mov_text subtitles",
 			target: core.TargetSpec{
 				VideoCodec: "hevc",

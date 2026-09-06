@@ -152,6 +152,88 @@ func softwareFallbackCodec(codecBase string, lossless bool) string {
 	}
 }
 
+func normalizePresetForCodec(codec, preset string) string {
+	p := strings.TrimSpace(strings.ToLower(preset))
+	if p == "" {
+		return ""
+	}
+	switch codec {
+	case "libsvtav1", "svtav1":
+		switch p {
+		case "ultrafast", "superfast", "veryfast":
+			return "8"
+		case "faster", "fast":
+			return "6"
+		case "medium":
+			return "5"
+		case "slow":
+			return "4"
+		case "slower", "veryslow", "placebo":
+			return "3"
+		default:
+			return p
+		}
+	case "libaom-av1":
+		switch p {
+		case "ultrafast", "superfast", "veryfast":
+			return "8"
+		case "faster", "fast":
+			return "6"
+		case "medium":
+			return "4"
+		case "slow":
+			return "3"
+		case "slower", "veryslow":
+			return "2"
+		default:
+			return p
+		}
+	default:
+		if strings.HasSuffix(codec, "_nvenc") {
+			switch p {
+			case "ultrafast", "superfast":
+				return "p1"
+			case "veryfast", "faster":
+				return "p2"
+			case "fast":
+				return "p3"
+			case "medium":
+				return "p4"
+			case "slow":
+				return "p6"
+			case "slower", "veryslow":
+				return "p7"
+			default:
+				return p
+			}
+		}
+		return p
+	}
+}
+
+func normalizeTuneForCodec(codec, tune string) string {
+	t := strings.TrimSpace(strings.ToLower(tune))
+	if t == "" {
+		return ""
+	}
+	if codec == "libsvtav1" || codec == "svtav1" {
+		switch t {
+		case "visual", "vq", "film", "animation", "0":
+			return "0"
+		case "psnr", "1":
+			return "1"
+		case "ssim", "2":
+			return "2"
+		default:
+			if _, err := strconv.Atoi(t); err == nil {
+				return t
+			}
+			return "0"
+		}
+	}
+	return t
+}
+
 // buildArgs monta os argumentos do ffmpeg a partir do TargetSpec.
 //
 // srcHeight é a altura do vídeo de origem (MediaInfo.Height), usada apenas
@@ -192,8 +274,8 @@ func buildArgs(target core.TargetSpec, isMP4 bool, audioCodecs []string, srcHeig
 		}
 
 		if codec != "copy" {
-			// Preset
-			preset := target.VideoPreset
+			// Preset normalizado por codec
+			preset := normalizePresetForCodec(codec, target.VideoPreset)
 			if target.VideoLossless && strings.HasSuffix(codec, "_nvenc") {
 				preset = ""
 			}
@@ -264,7 +346,7 @@ func buildArgs(target core.TargetSpec, isMP4 bool, audioCodecs []string, srcHeig
 				} else if codec == "libsvtav1" {
 					tuneVal := "0"
 					if target.VideoTune != "" {
-						tuneVal = target.VideoTune
+						tuneVal = normalizeTuneForCodec(codec, target.VideoTune)
 					}
 					args = append(args, "-svtav1-params", fmt.Sprintf("tune=%s", tuneVal))
 				}
