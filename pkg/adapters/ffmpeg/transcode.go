@@ -262,7 +262,15 @@ func buildArgs(target core.TargetSpec, isMP4 bool, audioCodecs []string, srcHeig
 				if codec == "libx265" {
 					args = append(args, "-x265-params", "open-gop=0")
 				} else if codec == "libsvtav1" {
-					args = append(args, "-svtav1-params", "tune=0")
+					tuneVal := "0"
+					if target.VideoTune != "" {
+						tuneVal = target.VideoTune
+					}
+					args = append(args, "-svtav1-params", fmt.Sprintf("tune=%s", tuneVal))
+				}
+
+				if target.VideoTune != "" && codec != "libsvtav1" {
+					args = append(args, "-tune", target.VideoTune)
 				}
 			}
 

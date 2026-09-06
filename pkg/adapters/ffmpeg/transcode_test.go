@@ -177,6 +177,49 @@ func TestBuildArgs(t *testing.T) {
 				"-c:s", "copy",
 			},
 		},
+		{
+			name: "H264 with tune animation",
+			target: core.TargetSpec{
+				VideoCodec: "libx264",
+				VideoCRF:   20,
+				VideoTune:  "animation",
+			},
+			want: []string{
+				"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-stats_period", "0.1",
+				"-c:v", "copy", "-c:v:0", "libx264", "-crf", "20",
+				"-tune", "animation",
+				"-c:s", "copy",
+			},
+		},
+		{
+			name: "H265 with tune grain",
+			target: core.TargetSpec{
+				VideoCodec: "libx265",
+				VideoCRF:   22,
+				VideoTune:  "grain",
+			},
+			want: []string{
+				"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-stats_period", "0.1",
+				"-c:v", "copy", "-c:v:0", "libx265", "-preset", "slow", "-crf", "22",
+				"-pix_fmt", "yuv420p10le", "-x265-params", "open-gop=0",
+				"-tune", "grain",
+				"-c:s", "copy",
+			},
+		},
+		{
+			name: "AV1 with custom tune 1",
+			target: core.TargetSpec{
+				VideoCodec: "libsvtav1",
+				VideoCRF:   30,
+				VideoTune:  "1",
+			},
+			want: []string{
+				"-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-stats_period", "0.1",
+				"-c:v", "copy", "-c:v:0", "libsvtav1", "-preset", "5", "-crf", "30",
+				"-pix_fmt", "yuv420p10le", "-svtav1-params", "tune=1",
+				"-c:s", "copy",
+			},
+		},
 	}
 
 	for _, tt := range tests {
