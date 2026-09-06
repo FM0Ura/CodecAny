@@ -35,6 +35,8 @@
   border-radius: var(--radius);
   color: var(--text-muted);
   background: var(--surface-2);
+  cursor: pointer;
+  transition: all 0.15s ease;
 }
 
 .rules__toolbar-actions button:hover {
@@ -87,6 +89,11 @@
   border-radius: var(--radius);
   background: var(--surface-2);
   overflow: hidden;
+  transition: border-color 0.2s ease;
+}
+
+.rule-card:hover {
+  border-color: var(--border);
 }
 
 .rule-card--disabled {
@@ -115,6 +122,7 @@
   border: 1px solid var(--border-soft);
   border-radius: 2px;
   background: var(--surface-3);
+  cursor: pointer;
 }
 
 .rule-card__order button:hover:not(:disabled) {
@@ -144,6 +152,11 @@
   color: var(--text);
 }
 
+.rule-card__name:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
 .rule-card__toggle {
   display: flex;
   align-items: center;
@@ -151,6 +164,7 @@
   font-size: 11.5px;
   color: var(--text-muted);
   white-space: nowrap;
+  cursor: pointer;
 }
 
 .rule-card__expand,
@@ -164,7 +178,10 @@
   border: 1px solid var(--border);
   border-radius: var(--radius);
   color: var(--text-muted);
+  background: var(--surface-3);
   white-space: nowrap;
+  cursor: pointer;
+  transition: all 0.15s ease;
 }
 
 .rule-card__expand:hover {
@@ -179,51 +196,341 @@
 
 .rule-card__body {
   border-top: 1px solid var(--border-soft);
-  padding: 0.9rem 0.9rem 1rem;
+  padding: 1rem;
   display: flex;
   flex-direction: column;
-  gap: 0.9rem;
+  gap: 1.25rem;
+  background: var(--surface-1);
 }
 
 .rule-card__fieldset {
   border: 1px solid var(--border-soft);
   border-radius: var(--radius);
-  padding: 0.75rem;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  background: var(--surface-2);
 }
 
-.rule-card__fieldset legend {
+.rule-card__fieldset--convert {
+  border-color: var(--accent-dim);
+}
+
+.rule-card__legend {
   font-family: var(--font-display);
   font-weight: 700;
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: var(--text-faint);
-  padding: 0 0.4em;
+  color: var(--signal);
+  padding: 0 0.5em;
+}
+
+.rules__section-title {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-soft);
+  padding-bottom: 0.35rem;
+  margin-top: 0.5rem;
 }
 
 .rule-card__grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
-  gap: 0.7rem;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 1rem;
 }
 
-.rule-card__grid label {
+.rules__field-block {
   display: flex;
   flex-direction: column;
-  gap: 0.3em;
-  font-size: 11px;
-  color: var(--text-faint);
+  gap: 0.35rem;
 }
 
-.rule-card__grid input,
+.rules__field-label {
+  display: flex;
+  flex-direction: column;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text);
+  gap: 0.15rem;
+}
+
+.rules__field-hint {
+  font-size: 10.5px;
+  font-weight: normal;
+  color: var(--text-faint);
+  line-height: 1.25;
+}
+
+.rules__input,
 .rules__select {
   background: var(--surface-3);
   border: 1px solid var(--border-soft);
   border-radius: var(--radius);
-  padding: 0.4em 0.55em;
+  padding: 0.45em 0.6em;
   font-size: 12.5px;
   color: var(--text);
+  width: 100%;
+  box-sizing: border-box;
+  transition: border-color 0.15s ease;
 }
+
+.rules__input:focus,
+.rules__select:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.rules__input-with-chips {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.rules__chips-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  align-items: center;
+}
+
+.rules__chips-label {
+  font-size: 10.5px;
+  color: var(--text-faint);
+  margin-right: 0.2rem;
+}
+
+.rules__chip {
+  font-family: var(--font-mono, monospace);
+  font-size: 10.5px;
+  padding: 0.15em 0.45em;
+  border-radius: 4px;
+  border: 1px solid var(--border-soft);
+  background: var(--surface-3);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.12s ease;
+  line-height: 1.3;
+}
+
+.rules__chip:hover {
+  border-color: var(--signal-dim);
+  color: var(--signal);
+  background: var(--surface-2);
+}
+
+.rules__chip--active {
+  background: var(--accent-fill, rgba(140, 111, 242, 0.15));
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* =====================================================================
+ * CRF Quality Card & Interactive Slider
+ * ===================================================================== */
+
+.rules__crf-fullwidth {
+  grid-column: 1 / -1;
+}
+
+.rules__crf-card {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--surface-3);
+  padding: 0.9rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.rules__crf-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.8rem;
+  flex-wrap: wrap;
+}
+
+.rules__crf-titles {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.rules__crf-input-group {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.rules__crf-number-input {
+  width: 70px;
+  font-size: 14px;
+  font-weight: 700;
+  text-align: center;
+  padding: 0.35em 0.5em;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+}
+
+.rules__crf-slider-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.rules__crf-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 6px;
+  border-radius: 3px;
+  background: linear-gradient(
+    to right,
+    var(--info) 0%,
+    var(--success) 35%,
+    var(--accent) 55%,
+    var(--danger) 90%
+  );
+  outline: none;
+  cursor: pointer;
+}
+
+.rules__crf-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--text);
+  border: 2px solid var(--surface-1);
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+  transition: transform 0.1s ease;
+}
+
+.rules__crf-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+}
+
+.rules__crf-slider::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--text);
+  border: 2px solid var(--surface-1);
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+}
+
+.rules__crf-markers {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9.5px;
+  font-family: var(--font-mono, monospace);
+  color: var(--text-faint);
+  user-select: none;
+  padding: 0 2px;
+}
+
+.rules__crf-markers span {
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.rules__crf-markers span:hover {
+  color: var(--signal);
+}
+
+.rules__crf-quick-chips {
+  padding-top: 0.2rem;
+}
+
+.rules__crf-feedback {
+  padding: 0.55rem 0.8rem;
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  border: 1px solid var(--border-soft);
+  font-size: 12px;
+}
+
+.rules__crf-badge-title {
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+
+.rules__crf-badge-desc {
+  font-size: 11.5px;
+  opacity: 0.85;
+}
+
+.rules__crf-badge--lossless {
+  background: rgba(137, 147, 209, 0.15);
+  border-color: var(--info);
+  color: var(--info);
+}
+
+.rules__crf-badge--studio {
+  background: rgba(63, 214, 230, 0.12);
+  border-color: var(--signal);
+  color: var(--signal);
+}
+
+.rules__crf-badge--high {
+  background: rgba(90, 211, 148, 0.15);
+  border-color: var(--success);
+  color: var(--success);
+}
+
+.rules__crf-badge--balanced {
+  background: rgba(140, 111, 242, 0.15);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.rules__crf-badge--compression {
+  background: rgba(230, 180, 60, 0.15);
+  border-color: #e6b43c;
+  color: #f1c761;
+}
+
+.rules__crf-badge--extreme {
+  background: rgba(241, 107, 99, 0.15);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.rules__crf-advice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  background: var(--surface-2);
+  padding: 0.45rem 0.7rem;
+  border-radius: var(--radius);
+  border-left: 3px solid var(--signal);
+  line-height: 1.35;
+}
+
+.rules__crf-advice-icon {
+  flex-shrink: 0;
+}
+
+/* =====================================================================
+ * Readonly & Tester Panels
+ * ===================================================================== */
 
 .rules__readonly-note {
   font-size: 12.5px;
@@ -283,6 +590,7 @@
   border-radius: var(--radius);
   color: var(--accent);
   background: var(--accent-fill);
+  cursor: pointer;
 }
 
 .rules__tester-row button:disabled {

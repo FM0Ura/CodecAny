@@ -6,6 +6,7 @@ import {
   IconDirectories,
   IconHealth,
   IconHistory,
+  IconLogs,
   IconQueue,
   IconRules,
 } from "./icons";
@@ -26,6 +27,7 @@ const ITEMS: NavItem[] = [
   { to: "/regras", label: "Regras", icon: IconRules },
   { to: "/health-check", label: "Health Check", icon: IconHealth },
   { to: "/historico", label: "Histórico", icon: IconHistory },
+  { to: "/logs", label: "Logs", icon: IconLogs },
 ];
 
 interface NavRailProps {
