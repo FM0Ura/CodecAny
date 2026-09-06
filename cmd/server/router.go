@@ -33,6 +33,7 @@ type dashboardSummary struct {
 	StatusCounts map[string]int       `json:"status_counts"`
 	TotalSavings core.SizeMetrics     `json:"total_savings"`
 	HWAccel      []core.HWAccelStatus `json:"hwaccel"`
+	QueuePaused  bool                 `json:"queue_paused"`
 }
 
 // App agrupa as dependências do roteamento HTTP (Engine real, Broadcaster de
@@ -200,6 +201,7 @@ func (a *App) handleDashboardSummary(w http.ResponseWriter, r *http.Request) {
 		StatusCounts: statusCounts,
 		TotalSavings: savings,
 		HWAccel:      a.Engine.HWAccelStatus(),
+		QueuePaused:  a.Engine.IsQueuePaused(),
 	})
 }
 
