@@ -57,11 +57,14 @@ export interface JobMetadataDialogProps {
    * onApprove/onReject — um job não fica AWAITING_APPROVAL e FAILED/
    * ROLLED_BACK ao mesmo tempo. */
   onRequeue?: () => void;
+  /** Quando fornecida (jobs em QUEUED, IN_PROGRESS ou TESTING), renderiza
+   * o botão Cancelar. */
+  onCancel?: () => void;
   busy?: boolean;
   actionError?: string;
 }
 
-export function JobMetadataDialog({ job, onClose, onApprove, onReject, onRequeue, busy, actionError }: JobMetadataDialogProps) {
+export function JobMetadataDialog({ job, onClose, onApprove, onReject, onRequeue, onCancel, busy, actionError }: JobMetadataDialogProps) {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -72,7 +75,7 @@ export function JobMetadataDialog({ job, onClose, onApprove, onReject, onRequeue
 
   const t = job.target;
   const rows = buildRows(job.media_info, job.output_media_info);
-  const showActions = Boolean(onApprove || onReject || onRequeue);
+  const showActions = Boolean(onApprove || onReject || onRequeue || onCancel);
 
   return (
     <div className="job-drawer__overlay" onClick={onClose}>
@@ -230,6 +233,16 @@ export function JobMetadataDialog({ job, onClose, onApprove, onReject, onRequeue
                   onClick={onRequeue}
                 >
                   Reenfileirar
+                </button>
+              ) : null}
+              {onCancel ? (
+                <button
+                  type="button"
+                  className="approval__row-btn approval__row-btn--reject"
+                  disabled={busy}
+                  onClick={onCancel}
+                >
+                  Cancelar Job
                 </button>
               ) : null}
             </div>

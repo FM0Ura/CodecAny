@@ -15,6 +15,10 @@ import {
   AUDIO_CODEC_OPTIONS,
   CONTAINER_OPTIONS,
   evaluateCrf,
+  getPresetChipsForCodec,
+  getPresetsForCodec,
+  getTuneChipsForCodec,
+  getTunesForCodec,
   HWACCEL_OPTIONS,
   PRESET_OPTIONS,
   RESOLUTION_PRESETS,
@@ -650,94 +654,133 @@ function RuleCard({ rule, index, total, expanded, onToggleExpanded, onChange, on
                 </div>
               </div>
 
-              <div className="rules__field-block">
-                <label className="rules__field-label">
-                  video.preset
-                  <span className="rules__field-hint">Velocidade vs. eficiência de compressão</span>
-                </label>
-                <input
-                  className="numeric rules__input"
-                  list="datalist-presets"
-                  value={video?.preset ?? ""}
-                  placeholder="ex: medium, slow, p6, 6"
-                  onChange={(e) =>
-                    onChange({
-                      ...rule,
-                      convert: updateConvert(rule.convert, {
-                        video: { ...(video ?? DEFAULT_TARGET_VIDEO), preset: e.target.value },
-                      }),
-                    })
-                  }
-                />
-                <div className="rules__chips-row">
-                  {["medium", "slow", "faster", "p6", "6"].map((p) => (
-                    <button
-                      key={p}
-                      type="button"
-                      className={`rules__chip ${video?.preset === p ? "rules__chip--active" : ""}`}
-                      onClick={() =>
-                        onChange({
-                          ...rule,
-                          convert: updateConvert(rule.convert, {
-                            video: { ...(video ?? DEFAULT_TARGET_VIDEO), preset: p },
-                          }),
-                        })
-                      }
-                    >
-                      {p}
-                    </button>
-                  ))}
-                </div>
-              </div>
+              {(() => {
+                const currentCodec = video?.codec ?? "";
+                const currentHwaccel = video?.hwaccel ?? "";
+                const activePresetOptions = getPresetsForCodec(currentCodec, currentHwaccel);
+                const activePresetChips = getPresetChipsForCodec(currentCodec, currentHwaccel);
+                const activeTuneOptions = getTunesForCodec(currentCodec);
+                const activeTuneChips = getTuneChipsForCodec(currentCodec);
+                const isAv1 = currentCodec.toLowerCase().includes("av1") || currentCodec.toLowerCase().includes("svt");
+                const isNvenc = currentHwaccel.toLowerCase() === "nvenc" || currentCodec.toLowerCase().includes("nvenc");
+                const currentPresetLower = (video?.preset ?? "").toLowerCase().trim();
+                const isInvalidAv1TextPreset = isAv1 && ["slow", "medium", "fast", "faster", "veryfast", "slower", "veryslow", "ultrafast"].includes(currentPresetLower);
 
-              <div className="rules__field-block">
-                <label className="rules__field-label">
-                  video.tune
-                  <span className="rules__field-hint">Otimização para tipo de conteúdo ou métrica</span>
-                </label>
-                <input
-                  className="numeric rules__input"
-                  list="datalist-tunes"
-                  value={video?.tune ?? ""}
-                  placeholder="ex: film, animation, grain, 0"
-                  onChange={(e) =>
-                    onChange({
-                      ...rule,
-                      convert: updateConvert(rule.convert, {
-                        video: { ...(video ?? DEFAULT_TARGET_VIDEO), tune: e.target.value },
-                      }),
-                    })
-                  }
-                />
-                <div className="rules__chips-row">
-                  {[
-                    { label: "film", val: "film" },
-                    { label: "animation", val: "animation" },
-                    { label: "grain", val: "grain" },
-                    { label: "stillimage", val: "stillimage" },
-                    { label: "fastdecode", val: "fastdecode" },
-                  ].map((t) => (
-                    <button
-                      key={t.val}
-                      type="button"
-                      className={`rules__chip ${video?.tune === t.val ? "rules__chip--active" : ""}`}
-                      onClick={() =>
-                        onChange({
-                          ...rule,
-                          convert: updateConvert(rule.convert, {
-                            video: {
-                              ...(video ?? DEFAULT_TARGET_VIDEO),
-                              tune: video?.tune === t.val ? "" : t.val,
-                            },
-                          }),
-                        })
-                      }
-                    >
-                      {t.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
+                return (
+                  <>
+                    <datalist id={`datalist-presets-${index}`}>
+                      {activePresetOptions.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label} — {o.hint}
+                        </option>
+                      ))}
+                    </datalist>
+                    <datalist id={`datalist-tunes-${index}`}>
+                      {activeTuneOptions.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label} — {o.hint}
+                        </option>
+                      ))}
+                    </datalist>
+
+                    <div className="rules__field-block">
+                      <label className="rules__field-label">
+                        video.preset
+                        <span className="rules__field-hint">
+                          {isAv1
+                            ? "SVT-AV1: presets numéricos (0 a 13; 4–6 recomendados)"
+                            : isNvenc
+                            ? "NVENC: presets p1 a p7 (p4 equilibrado, p6 alta qualidade)"
+                            : "Velocidade vs. eficiência de compressão"}
+                        </span>
+                      </label>
+                      <input
+                        className="numeric rules__input"
+                        list={`datalist-presets-${index}`}
+                        value={video?.preset ?? ""}
+                        placeholder={isAv1 ? "ex: 4, 5, 6, 8" : isNvenc ? "ex: p4, p6, p7" : "ex: medium, slow, faster"}
+                        onChange={(e) =>
+                          onChange({
+                            ...rule,
+                            convert: updateConvert(rule.convert, {
+                              video: { ...(video ?? DEFAULT_TARGET_VIDEO), preset: e.target.value },
+                            }),
+                          })
+                        }
+                      />
+                      <div className="rules__chips-row">
+                        {activePresetChips.map((p) => (
+                          <button
+                            key={p.val}
+                            type="button"
+                            className={`rules__chip ${video?.preset === p.val ? "rules__chip--active" : ""}`}
+                            onClick={() =>
+                              onChange({
+                                ...rule,
+                                convert: updateConvert(rule.convert, {
+                                  video: { ...(video ?? DEFAULT_TARGET_VIDEO), preset: p.val },
+                                }),
+                              })
+                            }
+                          >
+                            {p.label}
+                          </button>
+                        ))}
+                      </div>
+                      {isInvalidAv1TextPreset && (
+                        <div className="rules__crf-description" style={{ color: "var(--color-warning, #f59e0b)", marginTop: 4 }}>
+                          💡 O SVT-AV1 exige número (4, 5, 6). O backend converterá automaticamente "{video?.preset}", mas recomendamos escolher o número correspondente.
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="rules__field-block">
+                      <label className="rules__field-label">
+                        video.tune
+                        <span className="rules__field-hint">
+                          {isAv1 ? "SVT-AV1: 0 (Qualidade Visual / VQ) ou 1 (PSNR)" : "Otimização para tipo de conteúdo ou métrica"}
+                        </span>
+                      </label>
+                      <input
+                        className="numeric rules__input"
+                        list={`datalist-tunes-${index}`}
+                        value={video?.tune ?? ""}
+                        placeholder={isAv1 ? "ex: 0, 1" : "ex: film, animation, grain"}
+                        onChange={(e) =>
+                          onChange({
+                            ...rule,
+                            convert: updateConvert(rule.convert, {
+                              video: { ...(video ?? DEFAULT_TARGET_VIDEO), tune: e.target.value },
+                            }),
+                          })
+                        }
+                      />
+                      <div className="rules__chips-row">
+                        {activeTuneChips.map((t) => (
+                          <button
+                            key={t.val}
+                            type="button"
+                            className={`rules__chip ${video?.tune === t.val ? "rules__chip--active" : ""}`}
+                            onClick={() =>
+                              onChange({
+                                ...rule,
+                                convert: updateConvert(rule.convert, {
+                                  video: {
+                                    ...(video ?? DEFAULT_TARGET_VIDEO),
+                                    tune: video?.tune === t.val ? "" : t.val,
+                                  },
+                                }),
+                              })
+                            }
+                          >
+                            {t.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                );
+              })()}
 
               <div className="rules__field-block">
                 <label className="rules__field-label">

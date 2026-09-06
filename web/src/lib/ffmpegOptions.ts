@@ -15,24 +15,129 @@ export const VIDEO_CODEC_OPTIONS: OptionItem[] = [
   { value: "prores", label: "prores (Apple ProRes)", hint: "Codec intermediário para edição profissional" },
 ];
 
-export const PRESET_OPTIONS: OptionItem[] = [
+export const SVT_AV1_PRESET_OPTIONS: OptionItem[] = [
+  { value: "3", label: "3 (SVT-AV1 - Máxima Eficiência)", hint: "Extremamente lento, máxima retenção de detalhes" },
+  { value: "4", label: "4 (SVT-AV1 - Lento / Arquivamento)", hint: "Alta qualidade e alta compressão (Recomendado Anime/Cinema)" },
+  { value: "5", label: "5 (SVT-AV1 - Equilibrado / Padrão)", hint: "Excelente equilíbrio entre velocidade e tamanho" },
+  { value: "6", label: "6 (SVT-AV1 - Rápido)", hint: "Conversão ágil com ótima retenção de qualidade" },
+  { value: "7", label: "7 (SVT-AV1 - Muito Rápido)", hint: "Mais rápido, compressão moderada" },
+  { value: "8", label: "8 (SVT-AV1 - Ultra Rápido)", hint: "Foco total em velocidade de encode" },
+];
+
+export const NVENC_PRESET_OPTIONS: OptionItem[] = [
+  { value: "p1", label: "p1 (NVENC - Mais rápido)", hint: "Preset NVENC mais rápido" },
+  { value: "p2", label: "p2 (NVENC - Muito rápido)", hint: "Foco em velocidade" },
+  { value: "p3", label: "p3 (NVENC - Rápido)", hint: "Rápido" },
+  { value: "p4", label: "p4 (NVENC - Equilibrado / Padrão)", hint: "Preset NVENC equilibrado" },
+  { value: "p5", label: "p5 (NVENC - Boa qualidade)", hint: "Otimizado para qualidade" },
+  { value: "p6", label: "p6 (NVENC - Alta qualidade)", hint: "Preset NVENC otimizado para qualidade" },
+  { value: "p7", label: "p7 (NVENC - Máxima qualidade)", hint: "Preset NVENC mais lento e refinado" },
+];
+
+export const CPU_PRESET_OPTIONS: OptionItem[] = [
   { value: "ultrafast", label: "ultrafast", hint: "Mais rápido possível, menor taxa de compressão" },
   { value: "superfast", label: "superfast", hint: "Muito rápido" },
   { value: "veryfast", label: "veryfast", hint: "Rápido com compressão razoável" },
   { value: "faster", label: "faster", hint: "Mais rápido que o padrão" },
   { value: "fast", label: "fast", hint: "Bom equilíbrio com ênfase em velocidade" },
-  { value: "medium", label: "medium (Padrão)", hint: "Padrão recomendado para uso geral" },
+  { value: "medium", label: "medium (Padrão)", hint: "Padrão recomendado para x264/x265" },
   { value: "slow", label: "slow (Recomendado x265/x264)", hint: "Melhor eficiência de compressão" },
   { value: "slower", label: "slower", hint: "Alta compressão, processamento lento" },
   { value: "veryslow", label: "veryslow", hint: "Máxima eficiência de compressão por CPU" },
-  { value: "p1", label: "p1 (NVENC - Mais rápido)", hint: "Preset NVENC mais rápido" },
-  { value: "p4", label: "p4 (NVENC - Equilibrado)", hint: "Preset NVENC equilibrado" },
-  { value: "p6", label: "p6 (NVENC - Alta qualidade)", hint: "Preset NVENC otimizado para qualidade" },
-  { value: "p7", label: "p7 (NVENC - Máxima qualidade)", hint: "Preset NVENC mais lento e refinado" },
-  { value: "4", label: "4 (SVT-AV1 - Arquivamento)", hint: "Preset numérico SVT-AV1 para alta qualidade" },
-  { value: "6", label: "6 (SVT-AV1 - Equilibrado)", hint: "Preset numérico SVT-AV1 balanceado" },
-  { value: "8", label: "8 (SVT-AV1 - Rápido)", hint: "Preset numérico SVT-AV1 para conversão veloz" },
 ];
+
+export const PRESET_OPTIONS: OptionItem[] = [
+  ...CPU_PRESET_OPTIONS,
+  ...NVENC_PRESET_OPTIONS,
+  ...SVT_AV1_PRESET_OPTIONS,
+];
+
+export const SVT_AV1_TUNE_OPTIONS: OptionItem[] = [
+  { value: "0", label: "0 (Qualidade Visual / VQ - Padrão)", hint: "Otimização psicovisual para percepção humana" },
+  { value: "1", label: "1 (PSNR Sintético)", hint: "Otimização sintética para métricas e benchmarks" },
+  { value: "2", label: "2 (SSIM Sintético)", hint: "Otimização sintética para métricas SSIM" },
+];
+
+export const CPU_TUNE_OPTIONS: OptionItem[] = [
+  { value: "", label: "Padrão / Nenhum", hint: "Comportamento geral balanceado do codificador" },
+  { value: "film", label: "film (Filmes / Live-action)", hint: "Preserva texturas e granulação natural de filmes reais" },
+  { value: "animation", label: "animation (Desenhos / Animes)", hint: "Otimizado para traços nítidos e áreas de cores sólidas 2D" },
+  { value: "grain", label: "grain (Película / Granulação)", hint: "Mantém a estrutura de grão analógico (película 35mm/16mm)" },
+  { value: "stillimage", label: "stillimage (Imagens estáticas)", hint: "Otimizado para fotos, slides e pouco movimento" },
+  { value: "fastdecode", label: "fastdecode (Decodificação rápida)", hint: "Reduz esforço de CPU do reprodutor/dispositivo" },
+  { value: "zerolatency", label: "zerolatency (Tempo real / Streaming)", hint: "Elimina buffers para latência mínima" },
+];
+
+export const TUNE_OPTIONS: OptionItem[] = [
+  ...CPU_TUNE_OPTIONS,
+  ...SVT_AV1_TUNE_OPTIONS,
+];
+
+export function getPresetsForCodec(codec: string = "", hwaccel: string = ""): OptionItem[] {
+  const normCodec = codec.toLowerCase();
+  const normHw = hwaccel.toLowerCase();
+
+  if (normHw === "nvenc" || normCodec.includes("nvenc")) {
+    return NVENC_PRESET_OPTIONS;
+  }
+  if (normCodec.includes("av1") || normCodec.includes("svt")) {
+    return SVT_AV1_PRESET_OPTIONS;
+  }
+  return CPU_PRESET_OPTIONS;
+}
+
+export function getPresetChipsForCodec(codec: string = "", hwaccel: string = ""): { val: string; label: string }[] {
+  const normCodec = codec.toLowerCase();
+  const normHw = hwaccel.toLowerCase();
+
+  if (normHw === "nvenc" || normCodec.includes("nvenc")) {
+    return [
+      { val: "p1", label: "p1 (Rápido)" },
+      { val: "p4", label: "p4 (Equilibrado)" },
+      { val: "p6", label: "p6 (Alta Qualidade)" },
+      { val: "p7", label: "p7 (Máximo)" },
+    ];
+  }
+  if (normCodec.includes("av1") || normCodec.includes("svt")) {
+    return [
+      { val: "4", label: "4 (Lento / Alta Comp)" },
+      { val: "5", label: "5 (Equilibrado)" },
+      { val: "6", label: "6 (Rápido)" },
+      { val: "8", label: "8 (Ultra Rápido)" },
+    ];
+  }
+  return [
+    { val: "faster", label: "faster" },
+    { val: "medium", label: "medium" },
+    { val: "slow", label: "slow" },
+    { val: "slower", label: "slower" },
+  ];
+}
+
+export function getTunesForCodec(codec: string = ""): OptionItem[] {
+  const normCodec = codec.toLowerCase();
+  if (normCodec.includes("av1") || normCodec.includes("svt")) {
+    return SVT_AV1_TUNE_OPTIONS;
+  }
+  return CPU_TUNE_OPTIONS;
+}
+
+export function getTuneChipsForCodec(codec: string = ""): { val: string; label: string }[] {
+  const normCodec = codec.toLowerCase();
+  if (normCodec.includes("av1") || normCodec.includes("svt")) {
+    return [
+      { val: "0", label: "0 (Qualidade Visual / VQ)" },
+      { val: "1", label: "1 (PSNR)" },
+      { val: "2", label: "2 (SSIM)" },
+    ];
+  }
+  return [
+    { val: "", label: "nenhum" },
+    { val: "film", label: "film" },
+    { val: "animation", label: "animation" },
+    { val: "grain", label: "grain" },
+  ];
+}
 
 export const HWACCEL_OPTIONS: OptionItem[] = [
   { value: "", label: "Nenhuma (CPU / Software)", hint: "Maior eficiência de compressão e qualidade visual" },
@@ -41,18 +146,6 @@ export const HWACCEL_OPTIONS: OptionItem[] = [
   { value: "vaapi", label: "vaapi (Linux Genérico / AMD / Intel)", hint: "API nativa Linux para aceleração de vídeo" },
   { value: "videotoolbox", label: "videotoolbox (Apple Silicon / macOS)", hint: "Aceleração de hardware nativa no macOS" },
   { value: "amf", label: "amf (AMD GPU)", hint: "Advanced Media Framework da AMD" },
-];
-
-export const TUNE_OPTIONS: OptionItem[] = [
-  { value: "", label: "Padrão / Nenhum", hint: "Comportamento geral balanceado do codificador" },
-  { value: "film", label: "film (Filmes / Live-action)", hint: "Preserva texturas e granulação natural de filmes reais" },
-  { value: "animation", label: "animation (Desenhos / Animes)", hint: "Otimizado para traços nítidos e áreas de cores sólidas 2D" },
-  { value: "grain", label: "grain (Película / Granulação)", hint: "Mantém a estrutura de grão analógico (película 35mm/16mm)" },
-  { value: "stillimage", label: "stillimage (Imagens estáticas)", hint: "Otimizado para fotos, slides e pouco movimento" },
-  { value: "fastdecode", label: "fastdecode (Decodificação rápida)", hint: "Reduz esforço de CPU do reprodutor/dispositivo" },
-  { value: "zerolatency", label: "zerolatency (Tempo real / Streaming)", hint: "Elimina buffers para latência mínima" },
-  { value: "0", label: "0 (SVT-AV1 - Qualidade Visual)", hint: "Otimização psicovisual (VQ) para percepção humana no AV1" },
-  { value: "1", label: "1 (SVT-AV1 - PSNR Sintético)", hint: "Otimização sintética para métricas de benchmark no AV1" },
 ];
 
 export const CONTAINER_OPTIONS: OptionItem[] = [

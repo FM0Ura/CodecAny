@@ -114,6 +114,7 @@ export interface DashboardSummary {
   status_counts: Partial<Record<JobStatus, number>>;
   total_savings: SizeMetrics;
   hwaccel: HWAccelStatus[];
+  queue_paused?: boolean;
 }
 
 export interface ServerStatus {

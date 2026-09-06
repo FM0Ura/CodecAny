@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ApiError, getJobs, requeueJob, subscribeToEvents } from "../api/client";
+import { ApiError, cancelAllJobs, cancelJob, getJobs, pauseQueue, requeueJob, resumeQueue, subscribeToEvents } from "../api/client";
 import type { Job, JobStatus } from "../api/types";
 import { Panel } from "../components/Panel";
 import { StatusChip } from "../components/Chip";
 import { JobMetadataDialog } from "../components/JobMetadataDialog";
+import { useDashboardSummary } from "../context/DashboardSummaryContext";
 import { basename, formatBytes, formatDateTime } from "../lib/format";
 import "./Queue.css";
 
@@ -60,14 +61,15 @@ function InlineProgress({ value }: { value: number }) {
 }
 
 export function Queue() {
+  const { summary, refresh: refreshSummary } = useDashboardSummary();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<JobStatus | "">("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [liveProgress, setLiveProgress] = useState<Record<string, number>>({});
-  const [requeueBusy, setRequeueBusy] = useState(false);
-  const [requeueError, setRequeueError] = useState<string | null>(null);
+  const [actionBusy, setActionBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -97,33 +99,137 @@ export function Queue() {
       }
       if (REFETCH_KINDS.has(event.kind)) {
         loadRef.current();
+        refreshSummary();
       }
     });
     return unsubscribe;
-  }, []);
+  }, [refreshSummary]);
 
   const selectedJob = jobs.find((j) => j.id === selectedId) ?? null;
 
   function selectJob(id: string) {
-    setRequeueError(null);
+    setActionError(null);
     setSelectedId(id);
   }
 
-  async function handleRequeue(id: string) {
-    setRequeueBusy(true);
-    setRequeueError(null);
+  async function handleToggleQueue() {
+    setActionBusy(true);
+    setActionError(null);
     try {
-      await requeueJob(id);
-      load(); // status vira QUEUED via refetch; job continua visível, não é removido da lista
+      if (summary?.queue_paused) {
+        await resumeQueue();
+      } else {
+        await pauseQueue();
+      }
+      await refreshSummary();
     } catch (err) {
-      setRequeueError(err instanceof ApiError ? err.message : "Falha ao reenfileirar o job.");
+      setActionError(err instanceof ApiError ? err.message : "Falha ao alterar estado da fila.");
     } finally {
-      setRequeueBusy(false);
+      setActionBusy(false);
     }
   }
 
+  async function handleCancelAll() {
+    if (!window.confirm("Deseja realmente cancelar todos os jobs em andamento e na fila?")) {
+      return;
+    }
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      await cancelAllJobs();
+      await load();
+      await refreshSummary();
+    } catch (err) {
+      setActionError(err instanceof ApiError ? err.message : "Falha ao cancelar jobs.");
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
+  async function handleRequeue(id: string, e?: React.MouseEvent) {
+    if (e) e.stopPropagation();
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      await requeueJob(id);
+      await load();
+      await refreshSummary();
+    } catch (err) {
+      setActionError(err instanceof ApiError ? err.message : "Falha ao reenfileirar o job.");
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
+  async function handleCancel(id: string, e?: React.MouseEvent) {
+    if (e) e.stopPropagation();
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      await cancelJob(id);
+      await load();
+      await refreshSummary();
+    } catch (err) {
+      setActionError(err instanceof ApiError ? err.message : "Falha ao cancelar o job.");
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
+  const isPaused = Boolean(summary?.queue_paused);
+  const cancellableCount = jobs.filter(
+    (j) => j.status === "QUEUED" || j.status === "IN_PROGRESS" || j.status === "TESTING"
+  ).length;
+
   return (
     <div className="queue">
+      <div className="queue__toolbar">
+        <div className="queue__toolbar-title">
+          <span>Status da Fila:</span>
+          <span
+            className={`queue__queue-status-tag ${
+              isPaused ? "queue__queue-status-tag--paused" : "queue__queue-status-tag--running"
+            }`}
+          >
+            {isPaused ? "⏸ Fila Pausada" : "▶ Fila em Execução"}
+          </span>
+        </div>
+        <div className="queue__toolbar-actions">
+          <button
+            type="button"
+            className={`queue__queue-btn ${
+              isPaused ? "queue__queue-btn--resume" : "queue__queue-btn--pause"
+            }`}
+            disabled={actionBusy}
+            onClick={handleToggleQueue}
+          >
+            {actionBusy
+              ? "Aguarde…"
+              : isPaused
+              ? "Retomar Processamento"
+              : "Pausar Processamento"}
+          </button>
+          <button
+            type="button"
+            className="queue__queue-btn queue__queue-btn--cancel-all"
+            disabled={actionBusy || cancellableCount === 0}
+            onClick={handleCancelAll}
+            title="Cancela todos os jobs que estão em andamento ou pendentes na fila"
+          >
+            Cancelar Todos ({cancellableCount})
+          </button>
+        </div>
+      </div>
+
+      {actionError ? (
+        <div className="queue__banner" role="alert">
+          <span>{actionError}</span>
+          <button type="button" onClick={() => setActionError(null)}>
+            Fechar
+          </button>
+        </div>
+      ) : null}
+
       {error ? (
         <div className="queue__banner" role="alert">
           <span>{error}</span>
@@ -170,11 +276,16 @@ export function Queue() {
                   <th>Convertido</th>
                   <th>Progresso</th>
                   <th>Criado em</th>
+                  <th style={{ textAlign: "right" }}>Ações</th>
                 </tr>
               </thead>
               <tbody>
                 {jobs.map((job) => {
                   const progress = liveProgress[job.id];
+                  const canCancel =
+                    job.status === "QUEUED" || job.status === "IN_PROGRESS" || job.status === "TESTING";
+                  const canRequeue = job.status === "FAILED" || job.status === "ROLLED_BACK";
+
                   return (
                     <tr
                       key={job.id}
@@ -208,6 +319,29 @@ export function Queue() {
                         )}
                       </td>
                       <td className="numeric">{formatDateTime(job.created_at)}</td>
+                      <td style={{ textAlign: "right" }} onClick={(e) => e.stopPropagation()}>
+                        {canCancel ? (
+                          <button
+                            type="button"
+                            className="queue__table-btn queue__table-btn--cancel"
+                            disabled={actionBusy}
+                            onClick={(e) => handleCancel(job.id, e)}
+                          >
+                            Cancelar
+                          </button>
+                        ) : canRequeue ? (
+                          <button
+                            type="button"
+                            className="queue__table-btn queue__table-btn--requeue"
+                            disabled={actionBusy}
+                            onClick={(e) => handleRequeue(job.id, e)}
+                          >
+                            Reenfileirar
+                          </button>
+                        ) : (
+                          <span className="queue__empty-note">—</span>
+                        )}
+                      </td>
                     </tr>
                   );
                 })}
@@ -226,8 +360,13 @@ export function Queue() {
               ? () => handleRequeue(selectedJob.id)
               : undefined
           }
-          busy={requeueBusy}
-          actionError={requeueError ?? undefined}
+          onCancel={
+            selectedJob.status === "QUEUED" || selectedJob.status === "IN_PROGRESS" || selectedJob.status === "TESTING"
+              ? () => handleCancel(selectedJob.id)
+              : undefined
+          }
+          busy={actionBusy}
+          actionError={actionError ?? undefined}
         />
       ) : null}
     </div>

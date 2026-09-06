@@ -214,6 +214,34 @@ export function rejectAll(): Promise<RejectAllResponse> {
   return postJSON<RejectAllResponse>("/api/staging/reject-all");
 }
 
+// --- Jobs / Fila (Fase A/G) ---------------------------------------------
+
+
+/** POST /api/jobs/{id}/cancel — aborta um job em andamento ou cancela um job na fila. */
+export function cancelJob(id: string): Promise<OkResponse> {
+  return postJSON<OkResponse>(`/api/jobs/${encodeURIComponent(id)}/cancel`);
+}
+
+/** POST /api/queue/cancel-all — cancela todos os jobs em andamento e pendentes na fila. */
+export function cancelAllJobs(): Promise<{ ok: boolean; count: number }> {
+  return postJSON<{ ok: boolean; count: number }>("/api/queue/cancel-all");
+}
+
+/** POST /api/queue/pause — pausa o processamento de novos jobs da fila. */
+export function pauseQueue(): Promise<{ ok: boolean; paused: boolean }> {
+  return postJSON<{ ok: boolean; paused: boolean }>("/api/queue/pause");
+}
+
+/** POST /api/queue/resume — retoma o processamento de novos jobs da fila. */
+export function resumeQueue(): Promise<{ ok: boolean; paused: boolean }> {
+  return postJSON<{ ok: boolean; paused: boolean }>("/api/queue/resume");
+}
+
+/** GET /api/queue/status — obtém o status atual da fila (se está pausada). */
+export function getQueueStatus(): Promise<{ paused: boolean }> {
+  return getJSON<{ paused: boolean }>("/api/queue/status");
+}
+
 // --- Diretórios Monitorados (Fase C) -------------------------------------
 
 /** Lista os diretórios monitorados persistidos acompanhados de estatísticas. */

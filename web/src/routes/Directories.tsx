@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
-import { ApiError, addDir, browseFs, getDirs, getJobs, removeDir, rescanDirs } from "../api/client";
+import { ApiError, addDir, browseFs, cancelJob, getDirs, getJobs, removeDir, rescanDirs } from "../api/client";
 import type { FsBrowseResult, Job, JobStatus, WatchedDir } from "../api/types";
 import { Panel } from "../components/Panel";
 import { StatusChip } from "../components/Chip";
@@ -51,6 +51,23 @@ export function Directories() {
   const [dirJobs, setDirJobs] = useState<Job[]>([]);
   const [dirJobsLoading, setDirJobsLoading] = useState(false);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
+  const [jobActionBusy, setJobActionBusy] = useState(false);
+  const [jobActionError, setJobActionError] = useState<string | null>(null);
+
+  const handleCancelJob = async (jobId: string) => {
+    setJobActionBusy(true);
+    setJobActionError(null);
+    try {
+      await cancelJob(jobId);
+      if (selectedDir) {
+        await loadDirJobs(selectedDir, statusFilter);
+      }
+    } catch (err) {
+      setJobActionError(err instanceof ApiError ? err.message : "Falha ao cancelar job.");
+    } finally {
+      setJobActionBusy(false);
+    }
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -383,7 +400,20 @@ export function Directories() {
       ) : null}
 
       {selectedJob ? (
-        <JobMetadataDialog job={selectedJob} onClose={() => setSelectedJobId(null)} />
+        <JobMetadataDialog
+          job={selectedJob}
+          onClose={() => {
+            setSelectedJobId(null);
+            setJobActionError(null);
+          }}
+          onCancel={
+            selectedJob.status === "QUEUED" || selectedJob.status === "IN_PROGRESS" || selectedJob.status === "TESTING"
+              ? () => handleCancelJob(selectedJob.id)
+              : undefined
+          }
+          busy={jobActionBusy}
+          actionError={jobActionError ?? undefined}
+        />
       ) : null}
 
       {modalOpen ? (

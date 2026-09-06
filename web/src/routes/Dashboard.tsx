@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ApiError, getJob, subscribeToEvents } from "../api/client";
+import { ApiError, cancelJob, getJob, pauseQueue, resumeQueue, subscribeToEvents } from "../api/client";
 import type { Job, JobEvent, JobStatus } from "../api/types";
 import { Chip } from "../components/Chip";
 import { Panel } from "../components/Panel";
@@ -62,6 +62,9 @@ export function Dashboard() {
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [selectedLoading, setSelectedLoading] = useState<string | null>(null);
   const [selectedError, setSelectedError] = useState<string | null>(null);
+  const [queueBusy, setQueueBusy] = useState(false);
+  const [cancellingJobId, setCancellingJobId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
 
@@ -75,6 +78,41 @@ export function Dashboard() {
       setSelectedError(err instanceof ApiError ? err.message : "Falha ao carregar detalhes do job.");
     } finally {
       setSelectedLoading((prev) => (prev === jobId ? null : prev));
+    }
+  }
+
+  async function handleToggleQueue() {
+    setQueueBusy(true);
+    setActionError(null);
+    try {
+      if (summary?.queue_paused) {
+        await resumeQueue();
+      } else {
+        await pauseQueue();
+      }
+      await refresh();
+    } catch (err) {
+      setActionError(err instanceof ApiError ? err.message : "Falha ao alterar estado da fila.");
+    } finally {
+      setQueueBusy(false);
+    }
+  }
+
+  async function handleCancel(jobId: string, e?: React.MouseEvent) {
+    if (e) e.stopPropagation();
+    setCancellingJobId(jobId);
+    setActionError(null);
+    try {
+      await cancelJob(jobId);
+      await refresh();
+      if (selectedJob && selectedJob.id === jobId) {
+        const updated = await getJob(jobId);
+        setSelectedJob(updated);
+      }
+    } catch (err) {
+      setActionError(err instanceof ApiError ? err.message : "Falha ao cancelar job.");
+    } finally {
+      setCancellingJobId(null);
     }
   }
 
@@ -93,9 +131,48 @@ export function Dashboard() {
   }, []);
 
   const showInitialLoading = loading && !summary;
+  const isPaused = Boolean(summary?.queue_paused);
 
   return (
     <div className="dashboard">
+      <div className="dashboard__toolbar">
+        <div className="dashboard__toolbar-title">
+          <span>Status da Fila:</span>
+          <span
+            className={`dashboard__queue-status-tag ${
+              isPaused ? "dashboard__queue-status-tag--paused" : "dashboard__queue-status-tag--running"
+            }`}
+          >
+            {isPaused ? "⏸ Fila Pausada" : "▶ Fila em Execução"}
+          </span>
+        </div>
+        <button
+          type="button"
+          className={`dashboard__queue-btn ${
+            isPaused ? "dashboard__queue-btn--resume" : "dashboard__queue-btn--pause"
+          }`}
+          disabled={queueBusy}
+          onClick={handleToggleQueue}
+        >
+          {queueBusy
+            ? "Aguarde…"
+            : isPaused
+            ? "Retomar Processamento"
+            : "Pausar Processamento"}
+        </button>
+      </div>
+
+      {actionError ? (
+        <div className="dashboard__banner" role="alert">
+          <span>{actionError}</span>
+          <span className="dashboard__banner-actions">
+            <button type="button" onClick={() => setActionError(null)}>
+              Fechar
+            </button>
+          </span>
+        </div>
+      ) : null}
+
       {error ? (
         <div className="dashboard__banner" role="alert">
           <span>{error}</span>
@@ -205,6 +282,7 @@ export function Dashboard() {
               const event = liveEvents[jobId];
               if (!event) return null;
               const chipInfo = EVENT_CHIP[event.kind];
+              const isCancellable = event.kind === "OnJobStart" || event.kind === "OnJobProgress" || event.kind === "OnJobRequeued";
               return (
                 <div
                   className="job-row"
@@ -221,7 +299,19 @@ export function Dashboard() {
                     <span className="job-row__path" title={event.file_path}>
                       {basename(event.file_path)}
                     </span>
-                    <Chip variant={chipInfo.variant} label={chipInfo.label} />
+                    <div className="job-row__actions">
+                      <Chip variant={chipInfo.variant} label={chipInfo.label} />
+                      {isCancellable ? (
+                        <button
+                          type="button"
+                          className="job-row__cancel-btn"
+                          disabled={cancellingJobId === jobId}
+                          onClick={(e) => handleCancel(jobId, e)}
+                        >
+                          {cancellingJobId === jobId ? "Parando…" : "Cancelar"}
+                        </button>
+                      ) : null}
+                    </div>
                   </div>
                   <div className="job-row__meta">
                     <span>driver: {event.driver_used || "—"}</span>
@@ -253,7 +343,19 @@ export function Dashboard() {
         )}
       </Panel>
 
-      {selectedJob ? <JobMetadataDialog job={selectedJob} onClose={() => setSelectedJob(null)} /> : null}
+      {selectedJob ? (
+        <JobMetadataDialog
+          job={selectedJob}
+          onClose={() => setSelectedJob(null)}
+          onCancel={
+            selectedJob.status === "QUEUED" || selectedJob.status === "IN_PROGRESS" || selectedJob.status === "TESTING"
+              ? () => handleCancel(selectedJob.id)
+              : undefined
+          }
+          busy={cancellingJobId === selectedJob.id}
+          actionError={actionError ?? undefined}
+        />
+      ) : null}
     </div>
   );
 }
