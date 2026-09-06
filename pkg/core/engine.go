@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,23 +17,26 @@ import (
 
 // Engine orquestra todo o ciclo de vida dos Jobs (seção 2, RF04-RF06).
 type Engine struct {
-	store     *Store
-	rules     *RulesEngine
-	prober    MediaProber
-	verifier  MediaVerifier
-	engines   map[string]TranscoderEngine
-	workers   int
-	events    chan JobEvent
-	staging   string
-	integrity *IntegrityCheck
-	log       *slog.Logger
-	scanEvery time.Duration
-	wg        sync.WaitGroup
-	watcher   *Watcher
-	cancelled chan struct{}
-	closeOnce sync.Once
-	webhook   *WebhookClient
-	webhookWG sync.WaitGroup
+	store        *Store
+	rules        *RulesEngine
+	prober       MediaProber
+	verifier     MediaVerifier
+	engines      map[string]TranscoderEngine
+	workers      int
+	events       chan JobEvent
+	staging      string
+	integrity    *IntegrityCheck
+	log          *slog.Logger
+	scanEvery    time.Duration
+	wg           sync.WaitGroup
+	watcher      *Watcher
+	cancelled    chan struct{}
+	closeOnce    sync.Once
+	webhook      *WebhookClient
+	webhookWG    sync.WaitGroup
+	paused       atomic.Bool
+	muActive     sync.Mutex
+	activeCancel map[string]context.CancelFunc
 
 	// hwSemaphores limita transcodificações concorrentes por vendor de
 	// hwaccel (ex. "nvenc", "vaapi"), independente do pool de -workers.
@@ -94,6 +98,7 @@ func NewEngine(d EngineDeps) (*Engine, error) {
 		log:          d.Logger,
 		scanEvery:    defaultScanInterval,
 		cancelled:    make(chan struct{}),
+		activeCancel: make(map[string]context.CancelFunc),
 		webhook:      NewWebhookClient(d.Rules.Global().Notifications),
 		hwSemaphores: hwSemaphores,
 	}, nil
@@ -176,9 +181,10 @@ func (e *Engine) HandleDiscovered(path string) bool {
 		}
 
 		if existing, err := e.store.FindByPath(path); err == nil && existing != nil {
-			if existing.Status != StatusFailed && existing.Status != StatusRolledBack {
+			if existing.Status != StatusFailed && existing.Status != StatusRolledBack && existing.Status != StatusIgnored {
 				return false
 			}
+			_ = e.store.DeleteJob(existing.ID)
 		}
 
 		var origSize int64
@@ -213,10 +219,11 @@ func (e *Engine) HandleDiscovered(path string) bool {
 		return false
 	}
 	if existing, err := e.store.FindByPath(path); err == nil && existing != nil {
-		// já existe job para este caminho
+		// já existe job para este caminho: apenas sobrescreve se estava em FAILED, ROLLED_BACK ou IGNORED
 		if existing.Status != StatusFailed && existing.Status != StatusRolledBack && existing.Status != StatusIgnored {
 			return false
 		}
+		_ = e.store.DeleteJob(existing.ID)
 	}
 	job := &Job{
 		ID:          uuid.NewString(),
@@ -401,6 +408,16 @@ func (e *Engine) workerLoop(ctx context.Context) {
 			return
 		default:
 		}
+		if e.IsQueuePaused() {
+			select {
+			case <-ctx.Done():
+				return
+			case <-e.cancelled:
+				return
+			case <-time.After(300 * time.Millisecond):
+				continue
+			}
+		}
 		// espera por jobs
 		job, err := e.store.NextPendingJob()
 		if err != nil {
@@ -421,6 +438,21 @@ func (e *Engine) workerLoop(ctx context.Context) {
 }
 
 func (e *Engine) runJob(ctx context.Context, job *Job) {
+	jobCtx, cancelJob := context.WithCancel(ctx)
+	e.muActive.Lock()
+	if e.activeCancel == nil {
+		e.activeCancel = make(map[string]context.CancelFunc)
+	}
+	e.activeCancel[job.ID] = cancelJob
+	e.muActive.Unlock()
+
+	defer func() {
+		e.muActive.Lock()
+		delete(e.activeCancel, job.ID)
+		e.muActive.Unlock()
+		cancelJob()
+	}()
+
 	now := time.Now()
 	if err := e.store.UpdateStatus(job.ID, StatusInProgress, &now, nil, ""); err != nil {
 		e.log.Error("falha ao marcar in_progress", "job_id", job.ID, "error", err.Error())
@@ -476,6 +508,10 @@ loop:
 		case <-ctx.Done():
 			cl.Abort()
 			e.fail(job, "shutdown durante transcode")
+			return
+		case <-jobCtx.Done():
+			cl.Abort()
+			e.fail(job, "cancelado pelo usuário")
 			return
 		case <-e.cancelled:
 			cl.Abort()
@@ -759,6 +795,88 @@ func (e *Engine) RejectAll() (int, []error) {
 		n++
 	}
 	return n, errs
+}
+
+// PauseQueue pausa o processamento de novos jobs da fila.
+func (e *Engine) PauseQueue() { e.paused.Store(true) }
+
+// ResumeQueue retoma o processamento de novos jobs da fila.
+func (e *Engine) ResumeQueue() { e.paused.Store(false) }
+
+// IsQueuePaused indica se o processamento da fila está pausado.
+func (e *Engine) IsQueuePaused() bool { return e.paused.Load() }
+
+// CancelJob aborta um job em andamento ou cancela um job na fila.
+func (e *Engine) CancelJob(id string) error {
+	e.muActive.Lock()
+	cancel, running := e.activeCancel[id]
+	e.muActive.Unlock()
+
+	if running && cancel != nil {
+		cancel()
+		return nil
+	}
+
+	job, err := e.store.FindByID(id)
+	if err != nil {
+		return err
+	}
+	if job == nil {
+		return fmt.Errorf("job %s não encontrado", id)
+	}
+	if job.Status == StatusQueued {
+		now := time.Now()
+		if err := e.store.UpdateStatus(id, StatusFailed, nil, &now, "cancelado na fila pelo usuário"); err != nil {
+			return err
+		}
+		e.emit(JobEvent{Kind: EventJobError, JobID: id, FilePath: job.Path, Driver: job.Driver, Error: "cancelado na fila pelo usuário"})
+		return nil
+	}
+	return fmt.Errorf("job %s está em status %s e não pode ser cancelado", id, job.Status)
+}
+
+// CancelAll cancela todos os jobs em andamento e todos os jobs pendentes na fila (StatusQueued).
+func (e *Engine) CancelAll() (int, error) {
+	var total int
+	// 1. Abortar jobs em execução ativa
+	e.muActive.Lock()
+	activeIDs := make([]string, 0, len(e.activeCancel))
+	for id, cancel := range e.activeCancel {
+		if cancel != nil {
+			cancel()
+			total++
+			activeIDs = append(activeIDs, id)
+		}
+	}
+	e.muActive.Unlock()
+
+	// 2. Cancelar jobs em StatusQueued
+	queued, err := e.store.ListByStatus(StatusQueued)
+	if err != nil {
+		return total, err
+	}
+
+	now := time.Now()
+	for _, job := range queued {
+		isActive := false
+		for _, aid := range activeIDs {
+			if aid == job.ID {
+				isActive = true
+				break
+			}
+		}
+		if isActive {
+			continue
+		}
+		if err := e.store.UpdateStatus(job.ID, StatusFailed, nil, &now, "cancelado na fila pelo usuário"); err != nil {
+			e.log.Error("falha ao cancelar job em lote", "job_id", job.ID, "error", err.Error())
+			continue
+		}
+		total++
+		e.emit(JobEvent{Kind: EventJobError, JobID: job.ID, FilePath: job.Path, Driver: job.Driver, Error: "cancelado na fila pelo usuário"})
+	}
+
+	return total, nil
 }
 
 // CloseCancellation sinaliza os workers para abortar o job em andamento.

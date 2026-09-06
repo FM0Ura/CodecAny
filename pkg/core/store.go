@@ -174,6 +174,12 @@ func (s *Store) UpdateStatus(id string, status JobStatus, startedAt, finishedAt 
 	return nil
 }
 
+// DeleteJob remove um Job pelo ID (usado para purgar registros antigos em FAILED/IGNORED ao reenfileirar).
+func (s *Store) DeleteJob(id string) error {
+	_, err := s.db.Exec(`DELETE FROM jobs WHERE id = ?`, id)
+	return err
+}
+
 // UpdatePath persiste um novo caminho para o Job. Usado quando o container
 // alvo muda a extensão do arquivo (Cleanup.FinalPath() difere do path
 // original) — sem isso o registro no banco ficaria apontando para um

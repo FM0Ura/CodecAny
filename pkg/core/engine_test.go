@@ -553,6 +553,62 @@ func TestEngineApproveJobFromFreshEngineInstance(t *testing.T) {
 	}
 }
 
+func TestHandleDiscoveredReplacesOnlyFailedRolledBackIgnored(t *testing.T) {
+	eng, _, _, _ := setupEngine(t, 1000, 500)
+
+	// 1. Arquivo com status COMPLETED -> HandleDiscovered NÃO deve alterar nem sobrescrever
+	pathCompleted := filepath.Join(t.TempDir(), "completed.mkv")
+	_ = os.WriteFile(pathCompleted, make([]byte, 1000), 0644)
+	fin := time.Now()
+	jobComp := &Job{ID: "job-completed", Path: pathCompleted, Status: StatusCompleted, Driver: "ffmpeg", CreatedAt: fin, FinishedAt: &fin}
+	_ = eng.store.CreateJob(jobComp)
+
+	res := eng.HandleDiscovered(pathCompleted)
+	if res {
+		t.Errorf("HandleDiscovered deveria retornar false para arquivo COMPLETED")
+	}
+	jobsComp, _ := eng.store.ListJobs(JobFilter{Dir: pathCompleted})
+	if len(jobsComp) != 1 || jobsComp[0].ID != "job-completed" || jobsComp[0].Status != StatusCompleted {
+		t.Errorf("job COMPLETED foi alterado indevidamente: %+v", jobsComp)
+	}
+
+	// 2. Arquivo com status QUEUED -> HandleDiscovered NÃO deve duplicar
+	pathQueued := filepath.Join(t.TempDir(), "queued.mkv")
+	_ = os.WriteFile(pathQueued, make([]byte, 1000), 0644)
+	jobQueued := &Job{ID: "job-queued", Path: pathQueued, Status: StatusQueued, Driver: "ffmpeg", CreatedAt: time.Now()}
+	_ = eng.store.CreateJob(jobQueued)
+
+	resQ := eng.HandleDiscovered(pathQueued)
+	if resQ {
+		t.Errorf("HandleDiscovered deveria retornar false para arquivo já QUEUED")
+	}
+	jobsQ, _ := eng.store.ListJobs(JobFilter{Dir: pathQueued})
+	if len(jobsQ) != 1 || jobsQ[0].ID != "job-queued" {
+		t.Errorf("job QUEUED foi duplicado/alterado indevidamente: %+v", jobsQ)
+	}
+
+	// 3. Arquivo com status FAILED -> HandleDiscovered DEVE sobrescrever/purgar o registro antigo FAILED e criar QUEUED limpo
+	pathFailed := filepath.Join(t.TempDir(), "failed.mkv")
+	_ = os.WriteFile(pathFailed, make([]byte, 1000), 0644)
+	jobFailed := &Job{ID: "job-failed-old", Path: pathFailed, Status: StatusFailed, Driver: "ffmpeg", CreatedAt: time.Now(), Error: "crash"}
+	_ = eng.store.CreateJob(jobFailed)
+
+	resF := eng.HandleDiscovered(pathFailed)
+	if !resF {
+		t.Errorf("HandleDiscovered deveria retornar true e reenfileirar arquivo FAILED")
+	}
+	jobsF, _ := eng.store.ListJobs(JobFilter{Dir: pathFailed})
+	if len(jobsF) != 1 {
+		t.Fatalf("esperava exatamente 1 job para o arquivo (sem duplicatas), obteve %d", len(jobsF))
+	}
+	if jobsF[0].Status != StatusQueued {
+		t.Errorf("status esperado QUEUED após rediscovery, obteve %s", jobsF[0].Status)
+	}
+	if jobsF[0].Error != "" {
+		t.Errorf("erro do job anterior deveria ter sido limpo, obteve %q", jobsF[0].Error)
+	}
+}
+
 // TestEngineRequeueJobMarksQueued confirma o caminho feliz: um job FAILED
 // volta a QUEUED e emite EventJobRequeued.
 func TestEngineRequeueJobMarksQueued(t *testing.T) {
@@ -1617,4 +1673,89 @@ func TestEngineHandleDiscoveredIgnoredFile(t *testing.T) {
 		t.Errorf("esperava exatamente 1 job IGNORED, obteve %d", len(jobs))
 	}
 }
+
+func TestEnginePauseResumeQueue(t *testing.T) {
+	eng, _, _, _ := setupEngine(t, 1000, 500)
+	if eng.IsQueuePaused() {
+		t.Errorf("esperava fila despausada por padrão")
+	}
+
+	eng.PauseQueue()
+	if !eng.IsQueuePaused() {
+		t.Errorf("esperava fila pausada após PauseQueue()")
+	}
+
+	eng.ResumeQueue()
+	if eng.IsQueuePaused() {
+		t.Errorf("esperava fila despausada após ResumeQueue()")
+	}
+}
+
+func TestEngineCancelJobQueued(t *testing.T) {
+	eng, events, _, _ := setupEngine(t, 1000, 500)
+
+	job := &Job{ID: "job-cancel-q", Path: "x.mkv", Status: StatusQueued, Driver: "ffmpeg", CreatedAt: time.Now()}
+	if err := eng.store.CreateJob(job); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := eng.CancelJob("job-cancel-q"); err != nil {
+		t.Fatalf("CancelJob falhou: %v", err)
+	}
+
+	got, err := eng.store.FindByID("job-cancel-q")
+	if err != nil || got == nil {
+		t.Fatal("job não encontrado")
+	}
+	if got.Status != StatusFailed {
+		t.Errorf("status = %v, want FAILED", got.Status)
+	}
+	if !strings.Contains(got.Error, "cancelado") {
+		t.Errorf("error = %q, want mention of cancelado", got.Error)
+	}
+
+	select {
+	case ev := <-events:
+		if ev.Kind != EventJobError {
+			t.Errorf("kind = %v, want EventJobError", ev.Kind)
+		}
+	default:
+		t.Fatal("esperava evento de erro/cancelamento")
+	}
+}
+
+func TestEngineCancelAll(t *testing.T) {
+	eng, _, _, _ := setupEngine(t, 1000, 500)
+
+	job1 := &Job{ID: "job-1", Path: "x1.mkv", Status: StatusQueued, Driver: "ffmpeg", CreatedAt: time.Now()}
+	job2 := &Job{ID: "job-2", Path: "x2.mkv", Status: StatusQueued, Driver: "ffmpeg", CreatedAt: time.Now()}
+	_ = eng.store.CreateJob(job1)
+	_ = eng.store.CreateJob(job2)
+
+	// Mock an active running job cancel func
+	activeCancelled := false
+	eng.muActive.Lock()
+	eng.activeCancel["job-active"] = func() {
+		activeCancelled = true
+	}
+	eng.muActive.Unlock()
+
+	count, err := eng.CancelAll()
+	if err != nil {
+		t.Fatalf("CancelAll failed: %v", err)
+	}
+	if count != 3 {
+		t.Errorf("count = %d, want 3", count)
+	}
+	if !activeCancelled {
+		t.Errorf("active job was not cancelled")
+	}
+
+	j1, _ := eng.store.FindByID("job-1")
+	j2, _ := eng.store.FindByID("job-2")
+	if j1.Status != StatusFailed || j2.Status != StatusFailed {
+		t.Errorf("queued jobs should be marked StatusFailed")
+	}
+}
+
 

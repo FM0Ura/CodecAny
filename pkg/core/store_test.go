@@ -701,3 +701,35 @@ func TestStoreListWatchedDirStats(t *testing.T) {
 		t.Errorf("movies stats = %+v, want completed=1 ignored=0 failed=0 total=1", movies)
 	}
 }
+
+func TestStoreDeleteJob(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	job := &Job{
+		ID:     "to-delete",
+		Path:   "/media/test.mkv",
+		Status: StatusFailed,
+		Driver: "mock",
+	}
+	if err := store.CreateJob(job); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.DeleteJob("to-delete"); err != nil {
+		t.Fatalf("DeleteJob falhou: %v", err)
+	}
+
+	found, err := store.FindByID("to-delete")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found != nil {
+		t.Errorf("esperava nil após delete, obteve %+v", found)
+	}
+}
+
